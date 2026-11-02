@@ -1,0 +1,7 @@
+{
+  "_doc": "Navigateur donné aux agents pour du QA visuel, via un serveur MCP Playwright qui tourne à côté. Relu à chaque turn. Une copie publique part avec enabled=false : sans le service en face, les CLIs signalent un serveur MCP en échec à chaque turn.",
+  "enabled": false,
+  "url": "http://localhost:3902/mcp",
+  "name": "playwright",
+  "grokGlobal": false
+}

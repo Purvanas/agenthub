@@ -1,0 +1,10 @@
+{
+  "_doc": "Notification sortante à la fin d'un turn. Relu à chaque envoi, pas de redémarrage.",
+  "enabled": false,
+  "events": ["error", "stopped"],
+  "format": "ntfy",
+  "url": "https://ntfy.sh",
+  "topic": "",
+  "appUrl": "",
+  "headers": {}
+}

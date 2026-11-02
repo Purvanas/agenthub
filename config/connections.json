@@ -1,0 +1,7 @@
+{
+  "_doc": "Navigateur humain temporaire. Il partage son profil avec Playwright MCP : ferme-le avant de redonner le navigateur a un agent.",
+  "playwright": "",
+  "profile": "",
+  "width": 1280,
+  "height": 800
+}

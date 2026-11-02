@@ -1,0 +1,57 @@
+{
+  "_doc": "Prix API en dollars par million de tokens, utilisés pour tout turn que son fournisseur n'a pas chiffré. Claude Code renvoie costUSD par modèle dans son événement result, et c'est ce chiffre-là qui est stocké (source: provider) — mais un turn coupé avant cet événement n'en a pas, d'où la table `claude` ci-dessous. Les autres providers ne chiffrent jamais rien et passent toujours par cette table (source: table).",
+
+  "_cachedInput_doc": "`cachedInput` est le tarif des tokens relus depuis le cache, très inférieur au tarif d'entrée (un dixième chez OpenAI). Sans lui, une lecture de cache était facturée au plein tarif : sur un turn Codex qui relit la moitié de son contexte, le coût affiché était presque doublé. Absent d'une entrée, on retombe sur `input`. Ce tarif suppose des champs DISJOINTS — c'est le cas depuis le 03/08/2026 : l'entrée journalisée pour Codex ne contient plus le cache relu, alors que le relevé du CLI, lui, l'inclut. Voir `codexTokens` dans lib/usage.js.",
+
+  "_defaultModel_doc": "Modèle facturé quand la conversation n'en impose aucun. Sans ça les turns « défaut » n'étaient rattachés à aucune ligne de prix et comptaient pour zéro.",
+
+  "_cacheWrite_doc": "Écriture de cache. Chez Claude elle a son propre tarif, plus CHER que l'entrée : une fois et quart pour cinq minutes (`cacheWrite`), deux fois pour une heure (`cacheWrite1h`). Absents d'une entrée, on retombe sur `input` — c'est le cas de Codex, qui ne distingue pas l'écriture de cache de l'entrée.",
+
+  "providers": {
+    "claude": {
+      "_doc": "Claude chiffre lui-même ses turns : cette table ne sert QUE pour un turn coupé avant son relevé final — redémarrage, interruption — dont les tokens sont reconstitués depuis le flux. Voir « La consommation d'un turn coupé » dans le README.",
+      "_source": "Tarifs API publics au 03/08/2026. Vérifiés à rebours sur quatre turns réels du journal (opus-5, opus-5[1m], sonnet-5, haiku-4.5) : cette table reproduit au centime le coût que Claude Code avait lui-même calculé. C'est la meilleure preuve qu'elle est juste, et le test à refaire si un prix change.",
+      "defaultModel": "claude-opus-5",
+      "models": {
+        "claude-fable-5": { "input": 10, "cachedInput": 1, "cacheWrite": 12.5, "cacheWrite1h": 20, "output": 50 },
+        "claude-opus-5": { "input": 5, "cachedInput": 0.5, "cacheWrite": 6.25, "cacheWrite1h": 10, "output": 25 },
+        "claude-opus-4-8": { "input": 5, "cachedInput": 0.5, "cacheWrite": 6.25, "cacheWrite1h": 10, "output": 25 },
+        "claude-opus-4-7": { "input": 5, "cachedInput": 0.5, "cacheWrite": 6.25, "cacheWrite1h": 10, "output": 25 },
+        "claude-sonnet-5": { "input": 3, "cachedInput": 0.3, "cacheWrite": 3.75, "cacheWrite1h": 6, "output": 15 },
+        "claude-sonnet-4-6": { "input": 3, "cachedInput": 0.3, "cacheWrite": 3.75, "cacheWrite1h": 6, "output": 15 },
+        "claude-haiku-4-5": { "input": 1, "cachedInput": 0.1, "cacheWrite": 1.25, "cacheWrite1h": 2, "output": 5 },
+        "claude-haiku-4-5-20251001": { "input": 1, "cachedInput": 0.1, "cacheWrite": 1.25, "cacheWrite1h": 2, "output": 5 }
+      }
+    },
+    "codex": {
+      "_source": "Relevés le 01/08/2026 sur deux sources indépendantes qui concordent : benchlm.ai/openai/api-pricing et la table en crédits de learn.chatgpt.com/docs/pricing (25 crédits = 1 $, vérifié sur les six modèles). OpenAI a baissé Terra et Luna le 30/07/2026 — ces chiffres sont postérieurs.",
+      "defaultModel": "gpt-5.6-sol",
+      "models": {
+        "gpt-5.6-sol": { "input": 5, "cachedInput": 0.5, "output": 30 },
+        "gpt-5.6-terra": { "input": 2, "cachedInput": 0.2, "output": 12 },
+        "gpt-5.6-luna": { "input": 0.2, "cachedInput": 0.02, "output": 1.2 },
+        "gpt-5.5": { "input": 5, "cachedInput": 0.5, "output": 30 },
+        "gpt-5.4": { "input": 2.5, "cachedInput": 0.25, "output": 15 },
+        "gpt-5.4-mini": { "input": 0.75, "cachedInput": 0.075, "output": 4.5 },
+        "gpt-5.3-codex-spark": {
+          "input": 1.75,
+          "cachedInput": 0.175,
+          "output": 14,
+          "_source": "UNE seule source tierce. OpenAI le classe en « research preview » et ne publie pas son tarif : à revérifier avant d'en tirer une conclusion de coût."
+        }
+      }
+    },
+    "grok": {
+      "_source": "Articles tiers de juillet 2026, pas la doc xAI : à vérifier sur x.ai/api avant de prendre une décision de bascule.",
+      "defaultModel": "grok-4.7",
+      "models": {
+        "grok-build-0.1": { "input": 1, "output": 2, "_source": "tiers, à vérifier" },
+        "grok-4.7": { "input": 2, "output": 6, "_source": "repris du barème grok-4.5, non revérifié le 10/10/2026 — ne sert qu'à un turn coupé avant le chiffrage du CLI" },
+        "grok-4.7-build-fast": { "input": 2, "output": 6, "_source": "la fiche du CLI dit deux fois le prix, mais le barème de base n'est pas publié : on ne double pas un chiffre non vérifié. Repris de grok-4.5 le 10/10/2026, turns coupés seulement." },
+        "grok-4.6": { "input": 2, "output": 6, "_source": "repris du barème grok-4.5, non revérifié le 10/10/2026" },
+        "grok-4.5": { "input": 2, "output": 6, "_source": "tiers, à vérifier" },
+        "grok-4.5-build": { "input": 2, "output": 6, "_source": "tiers, à vérifier — ancienne variante Build, réellement facturée dans un turn avant 4.7" }
+      }
+    }
+  }
+}

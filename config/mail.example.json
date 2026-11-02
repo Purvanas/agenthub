@@ -1,0 +1,19 @@
+{
+  "_doc": "Copier en config/mail.json et remplir. Ce fichier-ci est un exemple suivi par git ; mail.json ne l'est PAS, parce qu'il contient un mot de passe. Sans mail.json, l'envoi par mail est simplement indisponible et le champ disparaît du formulaire de déclencheur.",
+  "enabled": false,
+
+  "_host_doc": "Serveur SMTP sortant. Port 587 avec STARTTLS est le cas courant ; 465 veut secure: true.",
+  "host": "smtp.example.com",
+  "port": 587,
+  "secure": false,
+
+  "_auth_doc": "Beaucoup de fournisseurs exigent un mot de passe d'application distinct du mot de passe du compte.",
+  "user": "moi@example.com",
+  "pass": "",
+
+  "_from_doc": "Expéditeur. Doit en général correspondre au compte authentifié, sinon le serveur refuse.",
+  "from": "agentHub <moi@example.com>",
+
+  "_to_doc": "Destinataire par défaut, utilisé quand un déclencheur demande un rapport par mail sans préciser d'adresse.",
+  "to": ""
+}

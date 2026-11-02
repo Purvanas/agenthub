@@ -1,0 +1,24 @@
+# Dépendances : réinstallables depuis package-lock.json.
+node_modules/
+
+# État de l'application : conversations, images envoyées, journal de consommation, notes
+# de passation, et un dépôt git fantôme par conversation pour les instantanés.
+#
+# Exclu pour trois raisons. C'est volumineux (l'essentiel en dépôts fantômes).
+# Ça contient des dépôts git imbriqués, que git refuserait de suivre
+# proprement. Et surtout ce n'est pas du code : ça n'a pas de version, seulement un état
+# courant, qui ne se restaure pas depuis une révision passée.
+#
+# Corollaire : ce dépôt ne sauvegarde PAS l'historique des conversations. Le supprimer
+# reste irréversible.
+data/
+
+# Réglages SMTP : ils contiennent un mot de passe. `config/mail.example.json` est suivi et
+# documente les champs ; la vraie configuration reste sur la machine. C'est le seul fichier
+# de `config/` hors du dépôt — les autres n'ont aucun secret.
+config/mail.json
+
+# Archives de transfert vers le dépôt du PC.
+*.tar.gz
+
+*.log

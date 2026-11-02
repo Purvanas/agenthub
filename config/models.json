@@ -1,0 +1,86 @@
+{
+  "_doc": "Modèles et niveaux d'effort proposés dans l'UI. Claude et Codex n'énumèrent pas leurs modèles : les listes sont relevées dans les TUI (/model) le 31/07/2026, claude 2.1.220 et codex 0.146.0. Les alias Claude ('opus', 'fable'…) pointent toujours vers le dernier modèle du compte, donc ils ne périment pas. Grok est remplacé à la volée par `grok models`, voir `_grok_doc`.",
+  "claude": [
+    { "value": "", "label": "Défaut du compte — Opus 5 · 1M contexte" },
+    { "value": "opus", "label": "Opus 5 · 1M contexte — quotidien et tâches complexes" },
+    { "value": "fable", "label": "Fable 5 — tâches les plus longues (consomme vite, plafond 50 %/semaine)" },
+    { "value": "sonnet", "label": "Sonnet 5 — efficace pour la routine" },
+    { "value": "haiku", "label": "Haiku 4.5 — le plus rapide" }
+  ],
+  "_grok_doc": "Repli seulement. `/api/models` remplace cette liste par `grok models`, relu au plus une fois par jour (lib/grok-catalog.js). L'entrée vide ne passe pas --model et suit donc le défaut du compte. Les autres identifiants figent une version encore servie. Relevé du 10/10/2026, grok 1.0.50 : défaut grok-4.7, plus grok-4.7-build-fast, grok-4.6 et grok-4.5. Les efforts ci-dessous sont ceux de 4.7 ; 4.5 n'a pas xhigh, le catalogue vivant le retire quand cette version est choisie.",
+  "grok": [
+    {
+      "value": "",
+      "label": "Dernier modèle — Grok 4.7",
+      "group": "Actuel",
+      "note": "Suit le défaut du compte. La liste est relue chaque jour : quand le modèle du jour change, ce choix change avec lui."
+    },
+    {
+      "value": "grok-4.7",
+      "label": "Grok 4.7 — figé sur cette version",
+      "group": "Encore desservis",
+      "note": "Reste sur Grok 4.7, même quand le défaut du compte avancera, tant que cette version est encore servie."
+    },
+    {
+      "value": "grok-4.7-build-fast",
+      "label": "Grok 4.7 Fast — variante rapide, deux fois le prix",
+      "group": "Encore desservis",
+      "note": "Variante plus rapide de la même génération. La fiche du CLI indique deux fois le prix."
+    },
+    {
+      "value": "grok-4.6",
+      "label": "grok-4.6",
+      "group": "Encore desservis",
+      "note": "Ancienne version encore servie. Elle ne suit pas le modèle du jour."
+    },
+    {
+      "value": "grok-4.5",
+      "label": "Grok 4.5",
+      "group": "Encore desservis",
+      "note": "Ancienne version encore servie. Elle ne suit pas le modèle du jour.",
+      "efforts": [
+        { "value": "", "label": "Défaut du modèle" },
+        { "value": "low", "label": "Faible" },
+        { "value": "medium", "label": "Moyen" },
+        { "value": "high", "label": "Élevé" }
+      ]
+    }
+  ],
+  "codex": [
+    { "value": "", "label": "Défaut de Codex — gpt-5.6-sol" },
+    { "value": "gpt-5.6-sol", "label": "gpt-5.6-sol — frontier agentique, le plus capable" },
+    { "value": "gpt-5.6-terra", "label": "gpt-5.6-terra — équilibré, usage quotidien" },
+    { "value": "gpt-5.6-luna", "label": "gpt-5.6-luna — rapide et économique" },
+    { "value": "gpt-5.5", "label": "gpt-5.5 — code complexe et recherche" },
+    { "value": "gpt-5.4", "label": "gpt-5.4 — solide au quotidien" },
+    { "value": "gpt-5.4-mini", "label": "gpt-5.4-mini — petit, rapide, économique" },
+    { "value": "gpt-5.3-codex-spark", "label": "gpt-5.3-codex-spark — ultra rapide" }
+  ],
+  "_efforts_doc": "Claude : valeurs données par `claude --help` (--effort), fiables. Codex : relevées dans le sélecteur du TUI, où 'Extra high' correspond à xhigh ; 'max' et 'ultra' sont derrière « More reasoning… » et leur nom exact de config n'a PAS pu être vérifié (quota Codex épuisé jusqu'au 05/08/2026, et `-c model_reasoning_effort` ne valide pas l'énumération au chargement). Si une valeur est refusée, l'erreur remonte dans le fil de la conversation.",
+  "efforts": {
+    "claude": [
+      { "value": "", "label": "Défaut (élevé)" },
+      { "value": "low", "label": "Faible" },
+      { "value": "medium", "label": "Moyen" },
+      { "value": "high", "label": "Élevé" },
+      { "value": "xhigh", "label": "Très élevé" },
+      { "value": "max", "label": "Max — consomme beaucoup plus vite" }
+    ],
+    "grok": [
+      { "value": "", "label": "Défaut du modèle" },
+      { "value": "low", "label": "Faible" },
+      { "value": "medium", "label": "Moyen" },
+      { "value": "high", "label": "Élevé" },
+      { "value": "xhigh", "label": "Très élevé" }
+    ],
+    "codex": [
+      { "value": "", "label": "Défaut (faible)" },
+      { "value": "low", "label": "Faible" },
+      { "value": "medium", "label": "Moyen" },
+      { "value": "high", "label": "Élevé" },
+      { "value": "xhigh", "label": "Très élevé" },
+      { "value": "max", "label": "Max — non vérifié, consomme plus vite" },
+      { "value": "ultra", "label": "Ultra — non vérifié, consomme plus vite" }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "_doc": "Groupes du sélecteur de dossier. L'ordre fait la priorité : un dossier déjà classé par un groupe n'est pas repris par les suivants. Un motif finissant par /* prend les sous-dossiers directs.",
+  "newFolderParents": ["."],
+  "groups": [
+    {
+      "label": "Projects",
+      "patterns": ["./*"]
+    }
+  ],
+  "exclude": [
+    "node_modules",
+    "\\.git",
+    "\\.bak",
+    "\\.backup",
+    "^backup"
+  ]
+}

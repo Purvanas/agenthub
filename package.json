@@ -1,0 +1,17 @@
+{
+  "name": "agenthub",
+  "version": "1.0.0",
+  "description": "Interface web multi-agents (Claude Code, Codex, Grok Build) avec conversations reprenables, relais entre agents et déclencheurs planifiés",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "check": "find . -name '*.js' -not -path './node_modules/*' -print0 | xargs -0 -r -n1 node --check && echo 'syntaxe ok' && npm test"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "nodemailer": "^9.0.3",
+    "ws": "^8.18.0"
+  }
+}

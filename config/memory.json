@@ -1,0 +1,9 @@
+{
+  "_doc": "Mémoire d'un projet : les leçons tirées de turns qui se sont cognés, injectées dans le prompt des conversations du même projet. Voir la section « Mémoire de projet » du README.",
+
+  "_enabled_doc": "Éteint par défaut, et délibérément : chaque fiche coûte un turn supplémentaire, sur la conversation elle-même donc avec tout son contexte en entrée. C'est une dépense qu'on choisit, pas une qu'on découvre dans le journal de consommation.",
+  "enabled": false,
+
+  "_writeFile_doc": "Écrire aussi la fiche gardée dans docs/solutions/<titre>.md du projet, et seulement si ce dossier existe déjà — on suit la convention d'un dépôt, on ne lui en impose pas. Le fichier est neuf et non suivi par git : il ne salit pas la copie de travail, donc ne casse pas le push par updateInstead.",
+  "writeFile": true
+}

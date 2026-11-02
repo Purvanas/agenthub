@@ -1,0 +1,1312 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f1e1d">
+<meta name="color-scheme" content="dark">
+<title>agentHub</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+</head>
+<body>
+
+<div id="backdrop"></div>
+
+<div id="google-oauth-modal" class="modal hidden">
+  <div class="modal-box google-oauth-box">
+    <div class="google-oauth-head">
+      <div><h3 id="connection-modal-title">Connecter un compte Google</h3>
+        <p id="connection-modal-reason">Cette fenetre est le navigateur Ubuntu. La session reste sur le serveur.</p></div>
+      <button id="btn-google-oauth-cancel" class="ghost" title="Annuler">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div id="google-oauth-browser"></div>
+    <div id="connection-modal-foot" class="connection-modal-foot hidden">
+      <button id="btn-connection-modal-cancel" class="secondary">Plus tard</button>
+      <button id="btn-connection-modal-done" class="primary">Connexion terminee</button>
+    </div>
+  </div>
+</div>
+
+<aside id="sidebar">
+  <div class="side-top">
+    <button id="btn-new" class="side-action">
+      <svg class="icon"><use href="#i-plus"/></svg> Nouveau
+    </button>
+    <button id="btn-nav-fold" class="ghost" title="Replier le menu" aria-expanded="true">
+      <span class="nav-chev">⌃</span>
+    </button>
+    <button id="btn-burger" class="ghost mobile-only" title="Fermer le menu">
+      <svg class="icon"><use href="#i-close"/></svg>
+    </button>
+  </div>
+
+  <!-- Les vues de l'application, en un seul bloc. Une ligne par vue dans son propre conteneur
+       espaçait ces quatre entrées comme autant de sections indépendantes ; c'est un menu.
+       Replié, ce menu devient une rangée d'icônes : cinq lignes rendues à la liste des
+       conversations, sans qu'aucune vue ne coûte un clic de plus. Les libellés sont dans des
+       `span` pour qu'on puisse les masquer — un nœud de texte nu ne se cible pas en CSS. -->
+  <nav class="side-nav">
+    <button id="btn-usage" class="side-action" title="Consommation">
+      <svg class="icon"><use href="#i-gauge"/></svg> <span>Consommation</span>
+    </button>
+    <button id="btn-triggers" class="side-action" title="Planifier">
+      <svg class="icon"><use href="#i-clock"/></svg> <span>Planifier</span>
+    </button>
+    <button id="btn-skills" class="side-action" title="Skills">
+      <svg class="icon"><use href="#i-slash"/></svg> <span>Skills</span>
+    </button>
+    <button id="btn-connections" class="side-action" title="Connexions">
+      <svg class="icon"><use href="#i-key"/></svg> <span>Connexions</span>
+    </button>
+    <button id="btn-gallery" class="side-action" title="Galerie">
+      <svg class="icon"><use href="#i-image"/></svg> <span>Galerie</span>
+    </button>
+    <button id="btn-server" class="side-action" title="Serveur">
+      <svg class="icon"><use href="#i-server"/></svg> <span>Serveur</span>
+    </button>
+    <button id="btn-settings" class="side-action" title="Paramètres">
+      <svg class="icon"><use href="#i-sliders"/></svg> <span>Paramètres</span>
+    </button>
+  </nav>
+
+  <div class="side-search">
+    <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
+  </div>
+
+  <div class="side-filters">
+    <div id="provider-filter" class="filter-chips"></div>
+    <button id="btn-new-folder" class="filter-add" title="Créer un dossier">
+      <svg class="icon"><use href="#i-folder-plus"/></svg>
+    </button>
+  </div>
+
+  <nav id="conv-list"></nav>
+
+  <!-- Menu contextuel d'une conversation -->
+  <div id="row-menu" class="row-menu hidden"></div>
+
+  <div class="side-foot">
+    <div id="limits" class="limits"></div>
+    <button id="provider-state" title="Gérer les comptes"></button>
+  </div>
+</aside>
+
+<main id="main">
+  <!-- Écran de création -->
+  <section id="new-view" class="view">
+    <header class="topbar mobile-only">
+      <button id="btn-nav-new" class="ghost burger" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <span class="topbar-title">Nouvel agent</span>
+    </header>
+
+    <div class="new-wrap">
+      <h1 class="desktop-only">Nouvel agent</h1>
+
+      <!-- Aucun CLI connecté : un formulaire qui ne peut rien lancer ne sert à rien,
+           on dit plutôt ce qui manque et comment y remédier. -->
+      <div id="no-provider" class="no-provider hidden">
+        <h2>Aucun agent connecté</h2>
+        <p>
+          agentHub pilote des CLIs installés sur ce serveur. Il en faut au moins un,
+          connecté à un compte — pas les trois.
+        </p>
+        <ul id="no-provider-list" class="no-provider-list"></ul>
+        <button id="btn-connect" class="primary">Connecter un agent</button>
+        <p class="hint">
+          Un fournisseur absent doit d'abord être installé sur le serveur — puis
+          <button id="btn-recheck" class="link-btn">vérifie à nouveau</button>.
+        </p>
+      </div>
+
+      <div id="new-form">
+      <div class="field">
+        <label>Agent</label>
+        <div id="provider-pick" class="pick">
+          <button data-provider="claude" class="pick-btn active">
+            <svg viewBox="0 0 24 24" class="pv pv-claude"><use href="#ico-claude"/></svg> Claude Code
+          </button>
+          <button data-provider="codex" class="pick-btn">
+            <svg viewBox="0 0 24 24" class="pv pv-codex"><use href="#ico-codex"/></svg> Codex
+          </button>
+          <button data-provider="grok" class="pick-btn">
+            <svg viewBox="0 0 24 24" class="pv pv-grok"><use href="#ico-grok"/></svg> Grok
+          </button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="project">Dossier de travail</label>
+        <select id="project"></select>
+        <input id="project-custom" class="hidden sub-input" placeholder="/chemin/absolu/du/dossier" autocomplete="off">
+        <div id="new-folder" class="hidden sub-row">
+          <select id="new-folder-parent"></select>
+          <input id="new-folder-name" placeholder="nom-du-projet" autocomplete="off">
+          <button id="btn-mkdir" class="secondary">Créer</button>
+        </div>
+        <div id="project-none-note" class="relay-note hidden">L'agent reçoit un dossier vide
+          qui n'appartient qu'à cette conversation, et disparaît avec elle. Pour discuter, ou
+          bricoler sans toucher à un projet.</div>
+      </div>
+
+      <div class="field">
+        <label for="model">Modèle</label>
+        <select id="model"></select>
+        <input id="model-custom" class="hidden sub-input" placeholder="ex. claude-opus-5 ou sonnet[1m]" autocomplete="off">
+        <div id="model-note" class="relay-note hidden"></div>
+      </div>
+
+      <div class="field">
+        <label for="effort">Effort de raisonnement</label>
+        <select id="effort"></select>
+      </div>
+
+      <!-- Isolation : un worktree git par conversation. Le champ n'apparaît que sur un dépôt
+           utilisable — proposer une case qui échouera à la création n'aiderait personne. -->
+      <div class="field hidden" id="new-worktree-field">
+        <label class="check">
+          <input type="checkbox" id="new-worktree">
+          <span>Travailler sur une branche isolée</span>
+        </label>
+        <div class="relay-note" id="new-worktree-note"></div>
+      </div>
+
+      <div class="field hidden" id="new-browser-field">
+        <label class="check">
+          <input type="checkbox" id="new-browser">
+          <span>Donner un navigateur à l'agent</span>
+        </label>
+        <div class="relay-note" id="new-browser-note"></div>
+      </div>
+
+      <div class="field">
+        <label for="new-prompt">Première consigne <span class="hint">— facultative</span>
+          <button type="button" id="btn-saved-new" class="link-btn" title="Prompts enregistrés">modèles…</button>
+        </label>
+        <textarea id="new-prompt" rows="6" placeholder="Décris la tâche… ou laisse vide pour ouvrir la conversation et écrire ensuite."></textarea>
+      </div>
+
+      <!-- Mode objectif : la consigne devient un but, et la conversation ne s'arrête qu'une
+           fois qu'il est atteint. Le plafond de tours est à côté de la case, pas ailleurs :
+           c'est lui qui borne la dépense, et on veut le voir en le cochant. -->
+      <div class="field">
+        <label class="check">
+          <input type="checkbox" id="new-goal">
+          <span>Mode objectif <span class="hint">— l'agent boucle jusqu'à ce que ce soit fait</span></span>
+        </label>
+        <div class="goal-rounds hidden" id="new-goal-rounds-field">
+          <label for="new-goal-rounds">Relances au plus</label>
+          <select id="new-goal-rounds"></select>
+        </div>
+      </div>
+
+      <div class="new-foot">
+        <span id="new-error" class="error-text"></span>
+        <button id="btn-create" class="primary">Lancer l'agent</button>
+      </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Consommation -->
+  <section id="usage-view" class="view hidden">
+    <header id="usage-head">
+      <button id="btn-usage-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Consommation</h2>
+        <div id="usage-sub" class="sub"></div>
+      </div>
+      <button id="btn-usage-refresh" class="ghost" title="Rafraîchir">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+    <div id="usage-body">
+      <div id="month-tabs" class="month-tabs"></div>
+      <div id="usage-totals" class="totals"></div>
+      <div id="usage-weeks" class="board-block"></div>
+      <div id="usage-projects" class="board-block"></div>
+      <div id="usage-top" class="board-block"></div>
+      <div id="usage-providers"></div>
+      <p class="foot-note">
+        Ces chiffres ne couvrent que les turns lancés depuis agentHub, pas ce que tu
+        fais depuis ton PC. Le coût est l'équivalent API : ce que la même
+        consommation aurait coûté en facturation au token.
+      </p>
+    </div>
+  </section>
+
+  <!-- Serveur : l'etat de la machine, lu chez adminPanel. Rien n'est calcule ici — la
+       duplication serait exactement ce qu'on voulait eviter en « centralisant ». -->
+  <section id="server-view" class="view hidden">
+    <header id="server-head">
+      <button id="btn-server-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Serveur</h2>
+        <div id="server-sub" class="sub"></div>
+      </div>
+      <a id="server-open" class="ghost" href="#" target="_blank"
+         rel="noopener" title="Ouvrir le panneau d'administration">
+        <svg class="icon"><use href="#i-relay"/></svg>
+      </a>
+      <button id="btn-server-refresh" class="ghost" title="Rafraîchir">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+    <div id="server-body">
+      <div id="server-totals" class="totals"></div>
+      <div id="server-disk" class="board-block"></div>
+      <div id="server-pm2" class="board-block"></div>
+      <div id="server-services" class="board-block"></div>
+      <div id="server-sites" class="board-block"></div>
+      <p class="foot-note">
+        Ces relevés viennent d'adminPanel, en lecture seule. Agir — relancer un service,
+        bannir une IP, ouvrir un terminal — se fait dans le panneau, qui reste une
+        application à part : c'est l'outil qu'on ouvre quand agentHub est cassé.
+      </p>
+    </div>
+  </section>
+
+  <!-- Planifier : declencheurs recurrents et executions uniques -->
+  <section id="triggers-view" class="view hidden">
+    <header id="triggers-head">
+      <button id="btn-triggers-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Planifier</h2>
+        <div id="triggers-sub" class="sub"></div>
+      </div>
+      <button id="btn-triggers-refresh" class="ghost" title="Rafraîchir">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+
+    <div id="triggers-body">
+      <div id="triggers-list"></div>
+
+      <details id="trigger-form" class="trigger-form">
+        <summary><svg class="icon"><use href="#i-plus"/></svg>Planifier un agent</summary>
+        <div class="trigger-form-body">
+          <div class="field">
+            <label for="tr-name">Nom</label>
+            <input id="tr-name" placeholder="ex. Veille des logs" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <label>Agent</label>
+            <div id="tr-provider-pick" class="pick">
+              <button data-provider="claude" class="pick-btn active">
+                <svg viewBox="0 0 24 24" class="pv pv-claude"><use href="#ico-claude"/></svg> Claude Code
+              </button>
+              <button data-provider="codex" class="pick-btn">
+                <svg viewBox="0 0 24 24" class="pv pv-codex"><use href="#ico-codex"/></svg> Codex
+              </button>
+              <button data-provider="grok" class="pick-btn">
+                <svg viewBox="0 0 24 24" class="pv pv-grok"><use href="#ico-grok"/></svg> Grok
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="tr-project">Dossier de travail</label>
+            <select id="tr-project"></select>
+          </div>
+
+          <div class="trigger-row">
+            <div class="field">
+              <label for="tr-model">Modèle</label>
+              <select id="tr-model"></select>
+            </div>
+            <div class="field">
+              <label for="tr-effort">Effort de raisonnement</label>
+              <select id="tr-effort"></select>
+            </div>
+          </div>
+
+          <div class="trigger-row">
+            <div class="field">
+              <label for="tr-freq">Fréquence</label>
+              <select id="tr-freq"></select>
+            </div>
+            <div class="field" id="tr-hour-field">
+              <label for="tr-hour">Heure</label>
+              <select id="tr-hour"></select>
+            </div>
+            <div class="field hidden" id="tr-runat-field">
+              <label for="tr-runat">Date et heure</label>
+              <input id="tr-runat" type="datetime-local">
+            </div>
+            <div class="field hidden" id="tr-hookmin-field">
+              <label for="tr-hookmin">Délai minimum entre deux événements</label>
+              <input id="tr-hookmin" type="number" min="0" max="86400" step="10" value="60">
+            </div>
+          </div>
+          <div class="field hidden" id="tr-weekdays-field">
+            <label>Jours</label>
+            <div class="weekday-pick" aria-label="Jours de la semaine">
+              <label><input type="checkbox" value="1" checked><span>Lun</span></label>
+              <label><input type="checkbox" value="2" checked><span>Mar</span></label>
+              <label><input type="checkbox" value="3" checked><span>Mer</span></label>
+              <label><input type="checkbox" value="4" checked><span>Jeu</span></label>
+              <label><input type="checkbox" value="5" checked><span>Ven</span></label>
+              <label><input type="checkbox" value="6" checked><span>Sam</span></label>
+              <label><input type="checkbox" value="0" checked><span>Dim</span></label>
+            </div>
+          </div>
+          <div id="tr-freq-note" class="relay-note"></div>
+
+          <div class="trigger-row">
+            <div class="field">
+              <label for="tr-kill">Durée maximale</label>
+              <input id="tr-kill" type="number" min="1" max="1440" placeholder="minutes — vide : sans limite">
+            </div>
+            <div class="field">
+              <label for="tr-purge">Purge des exécutions</label>
+              <input id="tr-purge" type="number" min="1" max="365" placeholder="jours — vide : jamais">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="tr-prompt">Consigne</label>
+            <textarea id="tr-prompt" rows="4" placeholder="Ce que l'agent doit faire à chaque exécution…"></textarea>
+          </div>
+
+          <div class="field">
+            <label class="check">
+              <input type="checkbox" id="tr-report">
+              <span>Générer un rapport à la fin</span>
+            </label>
+            <div class="relay-note">Une fois son travail terminé, l'agent rédige un rapport dans
+              la même conversation — il a donc tout son contexte.</div>
+          </div>
+
+          <div id="tr-report-fields" class="hidden">
+            <div class="field">
+              <label for="tr-report-spec">Ce que le rapport doit contenir</label>
+              <textarea id="tr-report-spec" rows="3" placeholder="Vide : un résumé de ce qui a été fait, trouvé, et de ce qui reste à faire."></textarea>
+            </div>
+            <div class="field" id="tr-report-mail-field">
+              <label for="tr-report-email">Envoyer par mail à</label>
+              <input id="tr-report-email" type="email" placeholder="vide : le rapport reste dans l'app" autocomplete="off">
+              <div id="tr-report-mail-note" class="relay-note hidden">Envoi indisponible :
+                <code>config/mail.json</code> n'est pas configuré sur le serveur.</div>
+            </div>
+          </div>
+
+          <div class="new-foot">
+            <span id="tr-error" class="error-text"></span>
+            <button id="btn-tr-create" class="primary">Planifier</button>
+          </div>
+        </div>
+      </details>
+
+      <p class="foot-note">
+        Une exécution est une conversation ordinaire, rangée dans un dossier à son nom :
+        elle se relit et se relaie comme les autres. L'agent travaille sans personne devant
+        l'écran, en autonomie totale sur le dossier de travail — commence par un dossier sans
+        enjeu.
+      </p>
+    </div>
+  </section>
+
+  <!-- Skills : les commandes en « / » disponibles, et leur portée -->
+  <section id="skills-view" class="view hidden">
+    <header id="skills-head">
+      <button id="btn-skills-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Skills</h2>
+        <div id="skills-sub" class="sub"></div>
+      </div>
+      <button id="btn-skills-refresh" class="ghost" title="Rafraîchir">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+
+    <div id="skills-body">
+      <p class="foot-note">
+        Une skill s'utilise en écrivant <code>/son-nom</code> dans un message. Claude et Grok
+        lisent le même dossier, donc une skill écrite une fois vaut pour les deux ; pour Codex,
+        qui ne sait pas les dérouler lui-même, agentHub le fait à sa place. Rien à copier.
+      </p>
+
+      <div class="field">
+        <label for="skills-project">Projet, pour les skills de portée projet</label>
+        <select id="skills-project"></select>
+      </div>
+
+      <!-- L'atelier : un chat qui écrit et modifie les skills. C'est l'agent qui écrit les
+           fichiers, avec ses propres outils — il peut donc relire une skill avant de la
+           changer, ce qu'un formulaire ne saura jamais faire. La liste au-dessous se
+           rafraîchit à la fin de chaque échange : c'est le disque qui dit ce qui existe. -->
+      <section id="atelier" class="atelier">
+        <div class="atelier-head">
+          <svg class="icon"><use href="#i-slash"/></svg>
+          <span class="atelier-title">Atelier — dis ce que tu veux, l'agent écrit la skill</span>
+          <select id="atelier-provider" title="Agent qui tient l'atelier"></select>
+          <button id="btn-atelier-reset" class="ghost" title="Oublier ce fil et repartir de zéro">
+            <svg class="icon"><use href="#i-trash"/></svg>
+          </button>
+        </div>
+        <div id="atelier-log" class="atelier-log"></div>
+        <div id="atelier-live" class="atelier-live hidden"></div>
+        <div class="atelier-row">
+          <textarea id="atelier-input" rows="2" spellcheck="false"
+            placeholder="« ajoute une étape de vérification à /commit-work », « crée une skill qui déploie le site », « renomme /deployer en /deployer-la-prod »…"></textarea>
+          <button id="btn-atelier-send" class="primary send" title="Envoyer">
+            <svg class="icon"><use href="#i-send"/></svg>
+          </button>
+          <button id="btn-atelier-stop" class="danger send hidden" title="Interrompre l'atelier">
+            <svg class="icon"><use href="#i-stop"/></svg>
+          </button>
+        </div>
+        <span id="atelier-error" class="error-text"></span>
+      </section>
+
+      <div id="skills-list"></div>
+
+      <details id="skill-form" class="trigger-form">
+        <summary><svg class="icon"><use href="#i-plus"/></svg>Écrire une skill</summary>
+        <div class="trigger-form-body">
+          <div class="trigger-row">
+            <div class="field">
+              <label for="skill-name">Nom</label>
+              <input id="skill-name" placeholder="deployer-le-site" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="skill-scope">Portée</label>
+              <select id="skill-scope">
+                <option value="global">Globale — tous les projets</option>
+                <option value="project">Projet — celui choisi au-dessus</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="skill-desc">Description <span class="hint">— dit quand s'en servir</span></label>
+            <textarea id="skill-desc" rows="2" placeholder="Ce que ça fait, et à quel moment la prendre. C'est sur cette phrase seule qu'un agent décide de charger la skill."></textarea>
+          </div>
+
+          <div class="field">
+            <label for="skill-body">Mode opératoire</label>
+            <textarea id="skill-body" rows="8" placeholder="# Titre&#10;&#10;## Marche à suivre&#10;1. …&#10;2. …"></textarea>
+          </div>
+
+          <div class="new-foot">
+            <span id="skill-error" class="error-text"></span>
+            <button id="btn-skill-create" class="primary">Créer</button>
+          </div>
+        </div>
+      </details>
+
+      <p class="foot-note">
+        Besoin d'aide pour en écrire une ? Dans n'importe quelle conversation, tape
+        <code>/nouvelle-skill</code> : l'agent te guide et écrit le fichier au bon endroit.
+      </p>
+    </div>
+  </section>
+
+  <!-- Connexions du serveur : un Chromium que l'humain pilote, avec le profil que les
+       agents retrouveront ensuite par Playwright MCP. -->
+  <section id="connections-view" class="view hidden">
+    <header id="connections-head">
+      <button id="btn-connections-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Connexions</h2>
+        <div id="connections-sub" class="sub">Comptes accessibles depuis le serveur Ubuntu</div>
+      </div>
+      <button id="btn-connections-refresh" class="ghost" title="Rafraichir">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+
+    <div id="connections-body">
+      <div id="auth-requests" class="auth-requests hidden"></div>
+      <section class="connection-card google-card">
+        <div class="connection-card-head">
+          <svg class="icon"><use href="#i-key"/></svg>
+          <div>
+            <strong>Google OAuth</strong>
+            <p>Drive, Gmail et Calendar accessibles au serveur avec ton autorisation.</p>
+          </div>
+          <span id="google-state" class="connection-state">Non configure</span>
+        </div>
+        <div id="google-setup" class="google-setup hidden">
+          <p class="foot-note">Cree un client OAuth de type « Application Web » dans Google
+            Cloud, puis ajoute exactement cette URI de redirection autorisee :</p>
+          <div class="copy-row"><code id="google-callback"></code>
+            <button id="btn-google-copy" class="secondary">Copier</button></div>
+          <div class="field"><label for="google-client-id">Client ID</label>
+            <input id="google-client-id" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="google-client-secret">Client secret</label>
+            <input id="google-client-secret" type="password" autocomplete="new-password"></div>
+          <div class="google-scopes">
+            <label><input type="checkbox" value="drive"> Google Drive</label>
+            <label><input type="checkbox" value="gmail"> Gmail</label>
+            <label><input type="checkbox" value="calendar"> Google Calendar</label>
+          </div>
+          <button id="btn-google-config" class="primary">Enregistrer la configuration</button>
+        </div>
+        <div id="google-ready" class="hidden">
+          <div id="google-accounts" class="google-accounts"></div>
+          <button id="btn-google-connect" class="primary">Connecter un compte Google</button>
+          <button id="btn-google-settings" class="secondary">Configuration</button>
+        </div>
+        <button id="btn-google-browser" class="secondary google-browser-button">
+          Ouvrir une session Google dans le navigateur Ubuntu
+        </button>
+        <div id="google-error" class="modal-warn hidden"></div>
+      </section>
+
+      <section class="connection-card">
+        <div class="connection-card-head">
+          <svg class="icon"><use href="#i-browser"/></svg>
+          <div>
+            <strong>Navigateur du serveur</strong>
+            <p>Connecte-toi ici : les agents retrouveront ensuite cette session.</p>
+          </div>
+          <span id="remote-browser-state" class="connection-state">Ferme</span>
+        </div>
+
+        <div id="remote-browser-start" class="remote-browser-start">
+          <input id="remote-browser-url" value="https://vercel.com/login" spellcheck="false"
+            autocomplete="off" aria-label="Adresse a ouvrir">
+          <button id="btn-remote-browser-open" class="primary">Ouvrir sur Ubuntu</button>
+        </div>
+
+        <div id="remote-browser-shell" class="remote-browser-shell hidden">
+          <div class="remote-browser-bar">
+            <button id="btn-remote-browser-back" class="ghost" title="Page precedente">←</button>
+            <input id="remote-browser-address" spellcheck="false" autocomplete="off"
+              aria-label="Adresse du navigateur serveur">
+            <button id="btn-remote-browser-go" class="secondary">Aller</button>
+            <button id="btn-remote-browser-close" class="primary">Connexion terminee</button>
+          </div>
+          <div id="remote-browser-screen" class="remote-browser-screen" tabindex="0"
+            aria-label="Ecran interactif du navigateur Ubuntu">
+            <img id="remote-browser-frame" alt="Ecran du navigateur Ubuntu" draggable="false">
+            <div id="remote-browser-loading">Ouverture du navigateur…</div>
+          </div>
+          <p class="remote-browser-help">
+            Clique dans l'ecran puis tape normalement. Tab, Entree, Retour arriere et les
+            fleches sont transmis. Ferme le navigateur quand la connexion est terminee pour
+            rendre le profil aux agents.
+          </p>
+        </div>
+        <div id="remote-browser-error" class="modal-warn hidden"></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- Galerie -->
+  <section id="gallery-view" class="view hidden">
+    <header id="gallery-head">
+      <button id="btn-gallery-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Galerie</h2>
+        <div id="gallery-sub" class="sub"></div>
+      </div>
+      <select id="gal-project" class="head-select" title="Projet"></select>
+      <button id="btn-gal-new" class="ghost" title="Nouveau projet">
+        <svg class="icon"><use href="#i-folder-plus"/></svg>
+      </button>
+      <button id="btn-gal-menu" class="ghost" title="Actions du projet">
+        <svg class="icon"><use href="#i-dots"/></svg>
+      </button>
+    </header>
+
+    <div id="gallery-body">
+      <div id="gal-compose" class="gal-compose">
+        <textarea id="gal-prompt" rows="2" placeholder="Décris l'image à produire…"></textarea>
+        <div class="gal-compose-foot">
+          <div id="gal-agents" class="gal-agents"></div>
+          <span id="gal-error" class="error-text"></span>
+          <button id="btn-gal-run" class="primary">Générer</button>
+        </div>
+      </div>
+
+      <div id="gal-batches"></div>
+    </div>
+  </section>
+
+  <!-- Réglages modifiables depuis l'interface. Quatre sections seulement, et pas un miroir de
+       `config/` : les prix et la liste des modèles sont des relevés datés, pas des
+       préférences, et un chiffre faux saisi dans un champ ne se remarque jamais.
+
+       Le corps est rendu par `renderSettings`, parce que chaque section a le même squelette
+       — des champs, un état « modifié », un bouton d'essai — et que le recopier cinq fois
+       en HTML garantissait qu'une des cinq finirait par diverger. -->
+  <section id="settings-view" class="view hidden">
+    <header id="settings-head">
+      <button id="btn-settings-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2>Paramètres</h2>
+        <div class="sub">Écrits dans <code>data/settings.json</code>, par-dessus les valeurs du dépôt</div>
+      </div>
+      <button id="btn-settings-refresh" class="ghost" title="Recharger">
+        <svg class="icon"><use href="#i-refresh"/></svg>
+      </button>
+    </header>
+
+    <div id="settings-body"></div>
+  </section>
+
+  <!-- Conversation -->
+  <section id="conv-view" class="view hidden">
+    <header id="conv-head">
+      <button id="btn-back" class="ghost burger mobile-only" title="Menu">
+        <svg class="icon"><use href="#i-menu"/></svg>
+      </button>
+      <div class="head-main">
+        <h2 id="conv-title" title="Double-clic pour renommer"></h2>
+        <div id="conv-meta"></div>
+      </div>
+      <button id="btn-head-expand" class="ghost mobile-only" title="Afficher les réglages" aria-expanded="false">
+        <span class="mobile-head-chevron">⌄</span>
+      </button>
+      <button id="btn-head-more" class="ghost mobile-only" title="Plus d’actions" aria-expanded="false">
+        <svg class="icon"><use href="#i-dots"/></svg>
+      </button>
+      <div class="head-tools">
+        <select id="conv-model" class="head-select head-model" title="Modèle"></select>
+        <select id="conv-effort" class="head-select" title="Effort de raisonnement"></select>
+        <div id="ctx-ring" class="ctx hidden"></div>
+        <button id="btn-compact" class="ghost hidden" title="Compacter le contexte (/compact)">
+          <svg class="icon"><use href="#i-slash"/></svg>
+        </button>
+        <button id="btn-resume-light" class="ghost hidden" title="Reprendre léger : nouvelle session via note de passation">
+          <svg class="icon"><use href="#i-rewind"/></svg>
+        </button>
+        <button id="btn-browser" class="ghost hidden" title="Navigateur">
+          <svg class="icon"><use href="#i-browser"/></svg>
+        </button>
+        <button id="btn-git" class="ghost hidden" title="Graphe git du projet">
+          <svg class="icon"><use href="#i-git"/></svg>
+        </button>
+        <button id="btn-watch" class="ghost hidden" title="Regarder la page de l'agent">
+          <svg class="icon"><use href="#i-eye"/></svg>
+        </button>
+        <button id="btn-notes" class="ghost" title="Bloc-notes du projet">
+          <svg class="icon"><use href="#i-note"/></svg>
+        </button>
+        <button id="btn-plans" class="ghost" title="Plans et schémas du projet">
+          <svg class="icon"><use href="#i-plans"/></svg>
+        </button>
+        <button id="btn-merge" class="ghost hidden" title="Fusionner la branche isolée">
+          <svg class="icon"><use href="#i-branch"/></svg>
+        </button>
+        <button id="btn-relay" class="ghost" title="Relais : dériver vers un autre agent ou un autre modèle">
+          <svg class="icon"><use href="#i-relay"/></svg>
+        </button>
+        <button id="btn-delete" class="ghost" title="Supprimer la conversation">
+          <svg class="icon"><use href="#i-trash"/></svg>
+        </button>
+      </div>
+      <div id="mobile-head-menu" class="mobile-head-menu hidden">
+        <div id="mobile-head-meta" class="mobile-head-meta"></div>
+        <button id="mobile-action-git" data-head-action="git">
+          <svg class="icon"><use href="#i-git"/></svg><span>Graphe git</span>
+        </button>
+        <button data-head-action="notes">
+          <svg class="icon"><use href="#i-note"/></svg><span>Bloc-notes</span>
+        </button>
+        <button data-head-action="plans">
+          <svg class="icon"><use href="#i-plans"/></svg><span>Plans et schémas</span>
+        </button>
+        <button id="mobile-action-compact" class="hidden" data-head-action="compact">
+          <svg class="icon"><use href="#i-slash"/></svg><span>Compacter le contexte</span>
+        </button>
+        <button id="mobile-action-resume-light" class="hidden" data-head-action="resume-light">
+          <svg class="icon"><use href="#i-rewind"/></svg><span>Reprendre léger</span>
+        </button>
+        <button id="mobile-action-merge" class="hidden" data-head-action="merge">
+          <svg class="icon"><use href="#i-branch"/></svg><span>Fusionner la branche</span>
+        </button>
+        <button data-head-action="relay">
+          <svg class="icon"><use href="#i-relay"/></svg><span>Créer un relais</span>
+        </button>
+        <button class="danger-act" data-head-action="delete">
+          <svg class="icon"><use href="#i-trash"/></svg><span>Supprimer</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Découpe verticale : le fil et sa zone de saisie à gauche, le graphe git à droite.
+         Le graphe est une colonne haute et étroite par nature — le mettre en bas volait de la
+         hauteur aux deux. Sous 860 px il repasse en plein écran, une colonne de plus n'ayant
+         pas de sens sur un téléphone. -->
+    <div id="conv-split">
+      <div id="conv-main">
+        <div id="messages"></div>
+
+        <div id="composer">
+          <!-- La question posée par l'agent. Au-dessus de la file délibérément : tant qu'elle
+               n'a pas de réponse, plus rien n'avance sur cette conversation. -->
+          <div id="ask-pending" class="ask-pending hidden" data-ask-root></div>
+          <div id="queue" class="queue hidden"></div>
+          <!-- Mode objectif. Deux bandeaux, jamais les deux à la fois : celui qu'on arme avant
+               d'écrire l'objectif, et celui qui dit où en est la boucle une fois lancée. -->
+          <div id="goal-arm" class="goal-arm hidden">
+            <svg class="icon"><use href="#i-target"/></svg>
+            <span class="goal-arm-text">Objectif — l'agent boucle jusqu'à ce que ce soit fait</span>
+            <label for="goal-rounds">relances au plus</label>
+            <select id="goal-rounds"></select>
+            <button id="btn-goal-off" class="ghost" title="Revenir à un message ordinaire">
+              <svg class="icon"><use href="#i-close"/></svg>
+            </button>
+          </div>
+          <div id="goal-live" class="goal-live hidden"></div>
+          <!-- Skills : un textarea ne peut pas colorer son propre texte, ce badge joue ce
+               rôle quand la commande écrite est reconnue. Le menu, lui, se déplie à la frappe. -->
+          <div id="skill-menu" class="skill-menu hidden"></div>
+          <div id="skill-badge" class="skill-badge hidden"></div>
+          <div id="mic-hint" class="mic-hint hidden"></div>
+          <div id="attachments" class="attachments hidden"></div>
+          <div id="compose-menu" class="compose-menu hidden">
+            <button data-compose-action="attach"><svg class="icon"><use href="#i-paperclip"/></svg><span>Joindre un fichier</span></button>
+            <button data-compose-action="plan"><svg class="icon"><use href="#i-clock"/></svg><span>Envoyer plus tard</span></button>
+            <button data-compose-action="goal"><svg class="icon"><use href="#i-target"/></svg><span>Mode objectif</span></button>
+            <button data-compose-action="saved"><svg class="icon"><use href="#i-note"/></svg><span>Prompts enregistrés</span></button>
+          </div>
+          <div class="composer-row">
+            <button id="btn-compose-more" class="attach send mobile-only" title="Plus d’actions" aria-expanded="false">
+              <svg class="icon"><use href="#i-plus"/></svg>
+            </button>
+            <button id="btn-attach" class="attach send" title="Joindre un fichier">
+              <svg class="icon"><use href="#i-paperclip"/></svg>
+            </button>
+            <button id="btn-plan" class="attach send" title="Envoyer plus tard">
+              <svg class="icon"><use href="#i-clock"/></svg>
+            </button>
+            <button id="btn-goal" class="attach send" title="Mode objectif : l'agent boucle jusqu'à ce que ce soit fait">
+              <svg class="icon"><use href="#i-target"/></svg>
+            </button>
+            <button id="btn-saved" class="attach send" title="Prompts enregistrés : les consignes qu'on retape">
+              <svg class="icon"><use href="#i-note"/></svg>
+            </button>
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.md,.markdown,.json,text/markdown,application/json" multiple hidden>
+            <div class="prompt-shell">
+              <textarea id="prompt" rows="1" placeholder="Écris à l'agent…"
+                title="Entrée pour envoyer · Maj+Entrée pour un saut de ligne · colle ou dépose une image, un markdown ou un JSON"></textarea>
+              <span id="prompt-model" class="prompt-model hidden"></span>
+            </div>
+            <button id="btn-mic" class="mic send mobile-only" title="Maintenir pour dicter">
+              <svg class="icon"><use href="#i-mic"/></svg>
+            </button>
+            <button id="btn-send" class="primary send" title="Envoyer">
+              <svg class="icon"><use href="#i-send"/></svg>
+            </button>
+            <button id="btn-stop" class="danger send hidden" title="Interrompre l'agent">
+              <svg class="icon"><use href="#i-stop"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="git-grip" class="git-grip hidden" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
+
+      <aside id="git-panel" class="git-panel hidden">
+        <div class="git-head">
+          <span class="git-branch" id="git-branch"></span>
+          <span class="git-state" id="git-state"></span>
+          <button id="btn-git-refresh" class="ghost" title="Rafraîchir">
+            <svg class="icon"><use href="#i-refresh"/></svg>
+          </button>
+          <button id="btn-git-close" class="ghost" title="Fermer">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+        <div id="git-body" class="git-body"></div>
+      </aside>
+
+      <div id="notes-grip" class="git-grip hidden" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
+
+      <!-- Bloc-notes du projet. Même grammaire que le panneau git — tiroir vertical,
+           redimensionnable, plein écran sous 860 px — et jamais ouvert en même temps que
+           lui : deux colonnes en plus du fil ne laisseraient de place à aucune des trois. -->
+      <aside id="notes-panel" class="git-panel notes-panel hidden">
+        <div class="git-head">
+          <span class="git-branch">Bloc-notes</span>
+          <span class="git-state" id="notes-count"></span>
+          <button id="btn-note-add" class="ghost" title="Nouveau ticket">
+            <svg class="icon"><use href="#i-plus"/></svg>
+          </button>
+          <button id="btn-notes-close" class="ghost" title="Fermer">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+
+        <div id="notes-form" class="notes-form hidden">
+          <input id="note-title" placeholder="Titre du ticket" autocomplete="off" maxlength="200">
+          <textarea id="note-body" rows="3" placeholder="Description… (facultative)" maxlength="5000"></textarea>
+          <div id="note-attachments" class="note-attachments hidden"></div>
+          <div class="notes-form-row">
+            <button id="btn-note-image" class="ghost" title="Joindre une image">
+              <svg class="icon"><use href="#i-image"/></svg>
+            </button>
+            <span id="notes-error" class="error-text"></span>
+            <button id="btn-note-cancel" class="secondary">Annuler</button>
+            <button id="btn-note-save" class="primary">Ajouter</button>
+          </div>
+        </div>
+
+        <div id="notes-body" class="notes-body"></div>
+      </aside>
+      <input type="file" id="note-file" accept="image/*" multiple hidden>
+
+      <div id="plans-grip" class="git-grip hidden" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
+
+      <!-- Plans et schémas du projet. Même grammaire que les deux tiroirs au-dessus, et jamais
+           ouvert en même temps qu'eux. Plus large par défaut : on y lit des documents et on y
+           regarde des diagrammes, pas une liste de titres.
+
+           Le tiroir porte trois vues dans le même corps — la liste rangée, un document, un
+           éditeur — et c'est `plans.js` qui décide laquelle. Les avoir écrites en trois
+           `<aside>` masqués aurait demandé de tenir trois arbres en accord à chaque
+           changement de projet. -->
+      <aside id="plans-panel" class="git-panel plans-panel hidden">
+        <div class="git-head">
+          <button id="btn-plans-back" class="ghost hidden" title="Revenir à la liste">
+            <svg class="icon"><use href="#i-arrow-left"/></svg>
+          </button>
+          <span class="git-branch">Plans</span>
+          <span class="git-state" id="plans-count"></span>
+          <button id="btn-plans-edit" class="ghost hidden" title="Modifier ce document">
+            <svg class="icon"><use href="#i-pencil"/></svg>
+          </button>
+          <button id="btn-plans-new" class="ghost" title="Nouveau plan ou schéma">
+            <svg class="icon"><use href="#i-plus"/></svg>
+          </button>
+          <button id="btn-plans-refresh" class="ghost" title="Rafraîchir">
+            <svg class="icon"><use href="#i-refresh"/></svg>
+          </button>
+          <button id="btn-plans-close" class="ghost" title="Fermer">
+            <svg class="icon"><use href="#i-close"/></svg>
+          </button>
+        </div>
+
+        <div id="plans-tabs" class="plans-tabs">
+          <button data-plans-tab="plans" class="plans-tab active">Plans</button>
+          <button data-plans-tab="schemas" class="plans-tab">Schémas</button>
+        </div>
+
+        <div id="plans-body" class="plans-body"></div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<!-- Second volet : une deuxième conversation, côte à côte.
+     C'est un iframe et non un pane rendu ici, délibérément. Tout le rendu d'une conversation
+     — fil, composeur, skills, git, planification, file d'attente — vise des `id` uniques ;
+     le dupliquer demanderait de re-paramétrer des dizaines de fonctions, sans un seul test
+     front pour rattraper une régression sur le volet principal. L'iframe donne deux
+     conversations réellement vivantes sans toucher au rendu, et chaque évolution future
+     profite aux deux d'office, sans divergence possible entre les deux volets. -->
+<div id="pane-grip" class="hidden" title="Glisser pour redimensionner"></div>
+<section id="pane-b" class="hidden">
+  <header id="pane-b-head">
+    <svg class="icon"><use href="#i-grip"/></svg>
+    <span id="pane-b-title">Second volet</span>
+    <button id="btn-pane-close" class="ghost" title="Fermer le second volet">
+      <svg class="icon"><use href="#i-close"/></svg>
+    </button>
+  </header>
+  <iframe id="pane-b-frame" title="Seconde conversation"></iframe>
+</section>
+
+<!-- Restauration de fichiers -->
+<!-- La page que l'agent manipule, rafraîchie tant que la fenêtre est ouverte. Une modale et
+     non un tiroir : on regarde par-dessus l'épaule un moment, on ne travaille pas à côté. -->
+<div id="watch-modal" class="modal hidden">
+  <div class="modal-box watch-box">
+    <div class="watch-head">
+      <svg class="icon"><use href="#i-eye"/></svg>
+      <span id="watch-url" class="watch-url">…</span>
+      <span id="watch-state" class="watch-state"></span>
+      <button id="btn-watch-close" class="ghost" title="Fermer">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div class="watch-screen"><img id="watch-img" alt="Page de l'agent"></div>
+    <p class="watch-note">Le navigateur est partagé : c'est la page ouverte par le dernier
+      agent qui s'en est servi, quelle que soit la conversation.</p>
+  </div>
+</div>
+
+<!-- Question posée par un agent qui ATTEND, sans avoir interrompu son turn. Une modale et
+     non un bandeau : tant qu'elle n'a pas de réponse, un agent est suspendu à l'autre bout.
+     Pas de bouton pour fermer — la fermer ne débloquerait rien. -->
+<div id="ask-modal" class="modal hidden">
+  <div class="modal-box ask-modal-box" data-ask-root></div>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <button id="modal-cancel" class="secondary">Annuler</button>
+      <button id="modal-ok" class="danger modal-ok">Restaurer les fichiers</button>
+    </div>
+  </div>
+</div>
+
+<!-- Envoyer un message plus tard -->
+<div id="plan-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Envoyer plus tard</h3>
+    <div class="modal-body">
+      <p class="relay-note">Le contexte de cette conversation est déjà là : rien à réécrire à
+        l'heure dite. L'envoi est enregistré sur le serveur — tu peux fermer la page ou
+        éteindre ton PC.</p>
+
+      <div class="field">
+        <label for="plan-text">Message</label>
+        <textarea id="plan-text" rows="5" placeholder="merge le fix dans dev…"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="plan-at">Date et heure</label>
+        <input id="plan-at" type="datetime-local">
+      </div>
+
+      <div class="field">
+        <label>Où l'exécuter</label>
+        <div id="plan-mode" class="pick">
+          <button data-plan-mode="fork" class="pick-btn active">Dans une copie</button>
+          <button data-plan-mode="same" class="pick-btn">Dans cette conversation</button>
+        </div>
+        <div id="plan-mode-note" class="relay-note"></div>
+      </div>
+
+      <div id="plan-list" class="plan-list"></div>
+      <div id="plan-error" class="error-text"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="plan-cancel" class="secondary">Fermer</button>
+      <button id="plan-ok" class="primary">Planifier l'envoi</button>
+    </div>
+  </div>
+</div>
+
+<!-- Secrets d'un projet -->
+<!-- Règles d'un projet. Ce qu'il faut faire avant certains gestes : « git push »,
+     « déploiement »… L'agent voit la liste des noms à chaque turn et lit celle qui le
+     concerne au moment d'agir. -->
+<div id="rules-modal" class="modal hidden">
+  <div class="modal-box secrets-box">
+    <h3>Règles de <span id="rules-project"></span></h3>
+    <div class="modal-body">
+      <p class="relay-note">Nomme une règle d'après le <strong>geste</strong> qu'elle encadre —
+        <code>git push</code>, <code>déploiement</code>, <code>migration</code>. À chaque turn,
+        les agents de ce projet voient la liste des noms et lisent celle qui les concerne avant
+        d'agir. C'est une consigne, pas un verrou : agentHub ne voit pas les commandes qu'un CLI
+        lance depuis son propre outil.</p>
+
+      <div id="rules-list" class="rules-list"></div>
+
+      <div class="rules-add">
+        <input id="rule-name" placeholder="git push" autocomplete="off" spellcheck="false" maxlength="60">
+        <input id="rule-when" placeholder="Quand elle s'applique — facultatif" autocomplete="off" maxlength="200">
+        <textarea id="rule-body" rows="5" maxlength="4000"
+          placeholder="Ne pousse jamais directement sur main : ouvre une branche, puis préviens par mail à…"></textarea>
+        <label class="check">
+          <input type="checkbox" id="rule-always">
+          <span>Toujours dans le prompt <span class="hint">— recopiée en entier à chaque turn,
+            au lieu d'attendre que l'agent pense à la lire</span></span>
+        </label>
+        <div class="rules-add-foot">
+          <span id="rules-error" class="error-text"></span>
+          <button id="btn-rule-cancel" class="secondary hidden">Annuler</button>
+          <button id="btn-rule-save" class="primary">Ajouter la règle</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="rules-close" class="secondary">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<div id="secrets-modal" class="modal hidden">
+  <div class="modal-box secrets-box">
+    <h3>Secrets de <span id="secrets-folder"></span></h3>
+    <div class="modal-body">
+      <p class="relay-note">Les agents qui travaillent dans ce dossier reçoivent ces valeurs
+        dans leur environnement et connaissent le nom des clés. Ils s'en servent en écrivant
+        <code>$NOM</code> dans leurs commandes. Toute valeur qui apparaîtrait dans une sortie
+        est masquée avant affichage.</p>
+
+      <div id="secrets-list" class="secrets-list"></div>
+
+      <div class="secrets-add">
+        <input id="secret-name" placeholder="GEMINI_API_KEY" autocomplete="off" spellcheck="false">
+        <input id="secret-value" type="password" placeholder="valeur" autocomplete="new-password" spellcheck="false">
+        <button id="btn-secret-add" class="secondary">Enregistrer</button>
+      </div>
+
+      <details class="secrets-import">
+        <summary>Coller un fichier <code>.env</code> entier</summary>
+        <textarea id="secret-env" rows="7" spellcheck="false" autocomplete="off"
+          placeholder="GEMINI_API_KEY=AIza…&#10;mdp_projet=…&#10;# les commentaires et les lignes vides sont ignorés"></textarea>
+        <div class="secrets-import-foot">
+          <span class="relay-note">Les clés déjà présentes sont remplacées, les autres conservées.</span>
+          <button id="btn-secret-import" class="secondary">Importer</button>
+        </div>
+      </details>
+
+      <div id="secrets-report" class="secrets-report hidden"></div>
+      <div id="secrets-error" class="error-text"></div>
+      <p class="relay-note">Une valeur enregistrée ne peut plus être relue ici, seulement
+        remplacée : la renvoyer au navigateur la ferait traverser le réseau à chaque
+        affichage.</p>
+    </div>
+    <div class="modal-foot">
+      <button id="secrets-close" class="secondary">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Aperçu en grand d'une image jointe -->
+<div id="lightbox" class="lightbox hidden">
+  <button id="lightbox-close" class="lightbox-close" title="Fermer">
+    <svg class="icon"><use href="#i-close"/></svg>
+  </button>
+  <img id="lightbox-img" alt="">
+  <div id="lightbox-name" class="lightbox-name"></div>
+</div>
+
+<svg style="display:none" aria-hidden="true">
+  <symbol id="ico-claude" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M12 2.2l1.55 6.02 4.4-4.4-2.4 5.7 6.05-1.57-5.3 3.05 5.3 3.05-6.05-1.57 2.4 5.7-4.4-4.4L12 21.8l-1.55-6.02-4.4 4.4 2.4-5.7-6.05 1.57 5.3-3.05-5.3-3.05 6.05 1.57-2.4-5.7 4.4 4.4z"/>
+  </symbol>
+  <symbol id="ico-codex" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.8" d="M12 3.2c4.85 0 8.8 3.94 8.8 8.8s-3.95 8.8-8.8 8.8S3.2 16.86 3.2 12 7.15 3.2 12 3.2zm0 4.1a4.7 4.7 0 100 9.4 4.7 4.7 0 000-9.4z"/>
+  </symbol>
+
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" d="M12 5v14M5 12h14"/>
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/>
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/>
+  </symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 18a8 8 0 1 1 16 0"/>
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 18l4.2-5"/>
+  </symbol>
+  <!-- Trois curseurs plutôt qu'une roue dentée : on règle des valeurs, on ne bricole pas
+       une machine. -->
+  <symbol id="i-sliders" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h10M18 7h2M4 12h3M11 12h9M4 17h8M16 17h4"/>
+    <circle cx="16" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="9" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="14" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="2"/>
+  </symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.6 6M20 5.5V11h-5.5"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M9.5 7V5h5v2M6.5 7l.8 12h9.4l.8-12M10.5 10.5v5M13.5 10.5v5"/>
+  </symbol>
+  <!-- Flèche d'envoi : trait épais et centré dans le disque. -->
+  <symbol id="i-send" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M12 20V5.2M5.6 11.6L12 5l6.4 6.6"/>
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24">
+    <rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/>
+  </symbol>
+  <!-- Marque xAI : deux traits obliques décalés, comme le X barré du logo. -->
+  <symbol id="ico-grok" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      d="M4.5 3.5l9.5 12M19.5 3.5L11 14M8.2 20.5l3.4-4.4"/>
+  </symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M3.5 7.5a2 2 0 0 1 2-2h3.4l1.8 2.2h7.8a2 2 0 0 1 2 2v8.3a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2zM12 11.6v5M9.5 14.1h5"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M3.5 7.5a2 2 0 0 1 2-2h3.4l1.8 2.2h7.8a2 2 0 0 1 2 2v8.3a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>
+  </symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M9 3.5h6l-.8 5.2 3.3 3.1H6.5l3.3-3.1zM12 11.8V20.5"/>
+  </symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24">
+    <g fill="currentColor"><circle cx="6" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18" cy="12" r="1.7"/></g>
+  </symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24">
+    <g fill="currentColor">
+      <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
+      <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+      <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-3-3l-10 10v3zM14.5 6.5l3 3"/>
+  </symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"
+      d="M5 12h13M12.5 6l6 6-6 6"/>
+  </symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"
+      d="M19 12H6M11.5 6l-6 6 6 6"/>
+  </symbol>
+  <!-- Plans et schémas : une feuille, et les nœuds d'un graphe dessus. Le graphe est ce qui la
+       distingue de l'icône du bloc-notes, qui est une feuille lignée. -->
+  <symbol id="i-plans" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M6 2.9h8.5L19 7.4v13.7H6z"/>
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M14 3v4.6h4.6"/>
+    <circle cx="9.4" cy="12.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+    <circle cx="15.4" cy="17.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+    <path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+      d="M10.5 13.5l3.8 2.8"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7"/>
+  </symbol>
+  <symbol id="i-target" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="12" cy="12" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="12" cy="12" r="1.2" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-rewind" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+      d="M4 12a8 8 0 1 0 2.6-5.9M4 5.5V11h5.5"/>
+  </symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"
+      d="M1.8 12S5.9 5.5 12 5.5 22.2 12 22.2 12 18.1 18.5 12 18.5 1.8 12 1.8 12Z"/>
+    <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+  </symbol>
+  <symbol id="i-note" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"
+      d="M5 3.5h14v13l-4.5 4h-9.5z"/>
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"
+      d="M19 16.5h-4.5v4"/>
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      d="M8.5 8h7M8.5 11.8h4.5"/>
+  </symbol>
+  <symbol id="i-ask" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+      d="M9.4 9.3a2.7 2.7 0 1 1 3.4 2.6c-.6.2-.9.7-.9 1.3v.6"/>
+    <circle cx="11.9" cy="16.8" r="1.15" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24">
+    <circle cx="7" cy="5.5" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="7" cy="18.5" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="17" cy="9" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      d="M7 7.9v8.2M17 11.4c0 3.1-2.4 4.7-7 4.7"/>
+  </symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+      d="M16.4 7.1v8.8a4.4 4.4 0 0 1-8.8 0V6.5a2.7 2.7 0 0 1 5.4 0v8.6a1.1 1.1 0 0 1-2.2 0V7.6"/>
+  </symbol>
+  <symbol id="i-image" viewBox="0 0 24 24">
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.9"/>
+    <circle cx="9" cy="9.6" r="1.6" fill="currentColor"/>
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M4.4 17.2l4.4-4.1 3.3 3 2.6-2.4 4.9 4.2"/>
+  </symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+      d="M12 4.2a2.7 2.7 0 0 1 2.7 2.7v4.6a2.7 2.7 0 0 1-5.4 0V6.9A2.7 2.7 0 0 1 12 4.2zM6.6 11a5.4 5.4 0 0 0 10.8 0M12 16.7V20"/>
+  </symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.9"/>
+    <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="M12 7.4V12l3.3 2"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M8 5.4v13.2l10.5-6.6z"/>
+  </symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M8 5.5h3v13H8zM13 5.5h3v13h-3z"/>
+  </symbol>
+  <!-- Relais : une branche qui se sépare du tronc. -->
+  <!-- Barre oblique dans un cadre : la commande en « / ». -->
+  <symbol id="i-slash" viewBox="0 0 24 24">
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor"
+      stroke-width="2"/>
+    <path d="M14 8.5l-4 7" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round"/>
+  </symbol>
+  <!-- Clé : anneau et panneton. -->
+  <symbol id="i-server" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+    <rect x="3" y="13" width="18" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path d="M7 7.5h.01M7 16.5h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24">
+    <path d="M12 3l7 3v5.5c0 4.3-2.9 8.2-7 9.5-4.1-1.3-7-5.2-7-9.5V6z" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path d="M15 5H6a2 2 0 0 0-2 2v9" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-key" viewBox="0 0 24 24">
+    <circle cx="8" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path d="M11 11l9 9M17 17l-2.5 2.5M20 20l2.2-2.2" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round"/>
+  </symbol>
+  <!-- Fenêtre de navigateur : cadre et barre de titre. -->
+  <symbol id="i-browser" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor"
+      stroke-width="2"/>
+    <path d="M3 9h18" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="6.4" cy="6.5" r=".9" fill="currentColor"/>
+    <circle cx="9.2" cy="6.5" r=".9" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-relay" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+      d="M7 4v9a4 4 0 0 0 4 4h6M14 13.5l3.5 3.5-3.5 3.5"/>
+    <circle cx="7" cy="4" r="1.9" fill="currentColor"/>
+  </symbol>
+  <!-- Une branche qui part d'un tronc et le rejoint : le motif du graphe lui-même. -->
+  <symbol id="i-git" viewBox="0 0 24 24">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      d="M7 6.9v10.2M7 10.5h5a4 4 0 0 0 4-4"/>
+    <circle cx="7" cy="4.6" r="2.1" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="7" cy="19.4" r="2.1" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="17.6" cy="5.2" r="2.1" fill="none" stroke="currentColor" stroke-width="2"/>
+  </symbol>
+</svg>
+
+<!-- Avant app.js : il appelle planPaint dès le premier rendu de la liste, et les puces
+     dès la première frappe dans le composeur. -->
+<script src="/reconcile.js"></script>
+<script src="/bullets.js"></script>
+<script src="/ideas.js"></script>
+<script src="/dialogs.js"></script>
+<!-- Après `dialogs.js`, dont il emprunte les modales et les avis. `mermaid` n'est PAS chargé
+     ici : 3,5 Mo que les sessions qui ne regardent aucun schéma n'ont pas à payer. `plans.js`
+     va le chercher dans /vendor à la première ouverture du tiroir. -->
+<script src="/plans.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
