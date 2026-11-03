@@ -1,209 +1,227 @@
+<div align="center">
+
 # agentHub
 
-Un cockpit web pour [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) et [Grok Build](https://x.ai). Tu ouvres la même page depuis l'ordinateur ou le téléphone, tu lances un agent, et le travail continue là où tu l'as laissé.
+### Le poste de pilotage de vos agents de code.
 
-Chaque conversation est une **vraie session CLI**. Le premier message la crée, les suivants la reprennent. Pas de terminal collé dans le navigateur, pas de `/resume` à taper : le serveur traduit le flux des CLIs en fil (texte, réflexion, outils, erreurs).
+**Claude Code · Codex · Grok Build**  
+Sessions persistantes, orchestration entre fournisseurs et suivi des exécutions dans une interface web.
 
-Trois dépendances (`express`, `ws`, `nodemailer`). HTML, CSS et JS vanilla. Aucune étape de build.
+[![JavaScript](https://img.shields.io/badge/JavaScript-vanilla-F7DF1E?logo=javascript&logoColor=black)](https://github.com/Purvanas/agenthub/blob/main/package.json)
+[![Node.js](https://img.shields.io/badge/Node.js-Express%20%2B%20WebSocket-339933?logo=nodedotjs&logoColor=white)](https://github.com/Purvanas/agenthub/blob/main/package.json)
+[![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/Purvanas/agenthub/blob/main/LICENSE)
+
+[Pourquoi agentHub](#pourquoi-agenthub) · [Du ticket à la relecture](#du-ticket-à-la-relecture) · [Ingénierie](#quelques-choix-dingénierie) · [Installation](#démarrer)
+
+</div>
+
+## Pourquoi agentHub
+
+J'ai créé agentHub pour mon propre usage : travailler régulièrement avec plusieurs agents de code, sur plusieurs projets, et garder la maîtrise de ce qu'ils font.
+
+À mesure que cet usage s'est installé, les difficultés se sont déplacées. Il fallait retrouver les décisions d'une ancienne session, transmettre un travail à un autre modèle, faire avancer deux tâches sans mélanger leurs fichiers, ou redémarrer le serveur pendant qu'un agent travaillait encore.
+
+agentHub rassemble ces besoins dans un même outil. Chaque conversation pilote une **véritable session CLI** : le premier message la crée, les suivants la reprennent. Le serveur traduit les événements des fournisseurs en un fil lisible — texte, réflexion lorsqu'elle est exposée, appels d'outils, résultats et erreurs — diffusé en temps réel par WebSocket.
+
+**C'est le projet personnel que j'utilise le plus : ses fonctionnalités viennent des problèmes rencontrés en travaillant avec les agents au quotidien.**
+
+## Du ticket à la relecture
+
+Un exemple de parcours pris en charge par agentHub :
+
+1. **Préparer le travail.** Un ticket porte le besoin ; les plans et schémas du dépôt donnent le contexte.
+2. **Lancer une équipe.** Un premier agent propose un plan, un deuxième réalise le travail dans un worktree Git dédié, un troisième relit la branche. Le relecteur est choisi chez un autre fournisseur lorsqu'il est disponible.
+3. **Suivre et intervenir.** Chaque étape reste une conversation visible, consultable, reprenable et interruptible. Un agent peut demander un arbitrage dans l'interface.
+4. **Examiner le résultat.** Les différences Git, l'historique et la consommation permettent de comprendre ce qui a été produit et à quel coût estimé. La fusion du worktree se fait à la demande.
+
+Cette chaîne **planification → réalisation → relecture** donne une structure au travail tout en laissant accès à chaque étape. Les conversations peuvent aussi être utilisées seules, ou transmises manuellement à un autre agent.
+
+## Garder le contexte, même quand le travail change de main
+
+### Passer d'un agent à un autre
+
+Un relais permet de poursuivre un travail avec un autre fournisseur ou un autre modèle. agentHub prépare une note de passation pour transmettre l'objectif, les décisions et l'état du travail. Lorsque le fournisseur prend en charge le fork de session, un relais au sein de ce fournisseur peut reprendre le contexte complet.
+
+Les sessions longues disposent également de deux actions : **compacter le contexte** via le CLI lorsque cette capacité existe, ou **reprendre léger** dans une nouvelle conversation à partir d'une note de passation. Une solution de repli peut construire cette note depuis l'historique si l'agent parent ne peut plus la rédiger.
+
+### Conserver ce que le projet a appris
+
+La mémoire de projet transforme certains problèmes résolus en propositions de leçons. **Seules les leçons retenues par l'utilisateur sont réinjectées** dans les échanges suivants ; leur nombre et leur longueur sont bornés pour maîtriser la place qu'elles occupent dans le contexte.
+
+Les plans, cadrages et diagrammes Mermaid restent, eux, des fichiers du dépôt. L'interface les découvre, les classe, les affiche et permet de les modifier à leur emplacement d'origine. Ils restent versionnés avec le code et utilisables en dehors d'agentHub.
+
+### Réutiliser ses méthodes
+
+Un catalogue de skills rend les commandes des CLIs accessibles depuis l'interface. Un atelier conversationnel permet de créer ou modifier les fichiers `SKILL.md` et leurs ressources associées. Les consignes fréquentes peuvent aussi être enregistrées sous forme de modèles de prompts avec des variables `{{nom}}`.
+
+## Donner de l'autonomie, avec des conditions d'arrêt
+
+### Mode objectif
+
+Le mode objectif alterne un tour de travail et un tour d'évaluation dédié, dont la réponse suit un schéma JSON : objectif atteint, état du travail et éléments restants. Si nécessaire, le résultat de cette évaluation devient la consigne du tour suivant.
+
+La boucle dispose d'un **plafond de tours**, s'arrête sur une interruption ou une erreur, et rend la main si l'évaluation est inexploitable. Cette séparation structure la poursuite du travail ; l'évaluation reste produite par un modèle et demande un regard humain adapté à l'enjeu.
+
+### Tâches planifiées et événements
+
+Des déclencheurs lancent des agents à une date donnée, selon une récurrence ou à réception d'un webhook. Chaque exécution possède sa conversation, son état et son historique. Des rapports par e-mail et des notifications ntfy ou webhook permettent d'en suivre l'issue.
+
+Les webhooks disposent d'un contrôle de concurrence par déclencheur et d'un délai minimal entre deux lancements. Les horaires utilisent un fuseau configurable, avec prise en compte des changements d'heure pour les récurrences calendaires.
+
+Il est aussi possible de **programmer un message dans une conversation existante**, ou dans une copie. Lorsque le fournisseur permet de figer sa session, le contexte de cette copie est conservé dès la planification.
+
+### Arbitrage humain pendant l'exécution
+
+Le serveur MCP intégré expose `ask_user`. L'appel attend la réponse de l'utilisateur dans l'interface, puis la renvoie comme résultat d'outil : l'agent peut obtenir une décision sans terminer son tour. Un délai maximal borne cette attente.
+
+## Savoir ce qui tourne, ce qui change et ce que cela consomme
+
+Les conversations sont organisées par dossiers, filtrables par fournisseur et accessibles sur une interface adaptée au bureau comme au mobile. La recherche plein texte retrouve aussi les commandes, résultats d'outils et références à des fichiers dans les anciens échanges. Une file de messages permet de préparer les prochaines consignes pendant une exécution.
+
+Pour travailler sur le code, agentHub associe **worktrees par conversation, consultation des différences et graphe de commits**. Des instantanés des fichiers sont pris avant les tours dans un dépôt Git séparé : on peut consulter les changements et restaurer un état sans ajouter de commits techniques dans l'historique du projet. La restauration concerne les fichiers, pas le contexte interne du modèle.
+
+Le tableau de consommation regroupe les tokens et les coûts par fournisseur, modèle, projet, conversation et période, avec un suivi des déclencheurs. Il distingue les coûts remontés par les fournisseurs de ceux calculés à partir d'une table tarifaire. Les cumuls de tokens de Codex sont convertis en différences entre relevés pour éviter de compter plusieurs fois les mêmes tokens.
+
+**Ces montants servent à comparer les usages : ils ne constituent pas une facture d'abonnement.**
+
+## Étendre l'espace de travail
+
+Des intégrations optionnelles complètent le parcours :
+
+| Besoin | Prise en charge |
+|---|---|
+| Vérifier une interface | Connexion des agents à un serveur MCP Playwright externe et visualisation du navigateur dans l'interface. |
+| Se connecter à un service | Navigateur d'intervention humaine partageant le profil persistant utilisé par Playwright. |
+| Accéder à Google | Connexion OAuth avec groupes de permissions pour l'identité, Drive, Gmail et Calendar ; jetons chiffrés sur disque avec une clé locale. |
+| Fournir des identifiants à un projet | Secrets injectés dans l'environnement des processus, valeurs non renvoyées à l'interface et masquage des valeurs reconnues dans les sorties traitées. |
+| Travailler avec des visuels | Images jointes aux conversations et galerie de fichiers image produits par les agents, rangés par projet de galerie. |
+| Consulter l'état du serveur | Intégration à un service d'administration externe, via un jeton de service en lecture seule. |
+
+Le cœur de l'application fonctionne sans ces services. Le navigateur, l'envoi d'e-mails et le panneau serveur demandent leur propre configuration.
+
+## Quelques choix d'ingénierie
+
+Le projet couvre toute la chaîne d'un outil pour agents : intégration des CLIs, adaptation des protocoles, gestion des processus, persistance, orchestration et interface temps réel.
+
+| Problème rencontré | Choix retenu et intérêt |
+|---|---|
+| Trois CLIs aux formats et capacités différents | Une table de fournisseurs centralise la construction des arguments, la traduction des événements et les capacités disponibles. L'interface s'adapte aux possibilités réelles de chacun. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/runner.js) |
+| Un redémarrage du serveur coupait le travail en cours | Le flux CLI passe par un fichier, avec un curseur de traitement persistant. Associé à `treekill: false` dans PM2, ce mécanisme permet de retrouver un processus survivant et reprendre la lecture de son flux après le redémarrage applicatif. [Explication](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/reprendre-un-turn-apres-redemarrage.md) |
+| L'historique devenait de plus en plus coûteux à enregistrer | Un cas documenté de 9,2 Mo bloquait la boucle d'événements environ 65 ms par sauvegarde. Les métadonnées sont désormais séparées d'un journal JSONL en ajout : l'écriture d'un élément dépend de sa taille plutôt que de celle du fil entier. [Explication](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/le-fil-entier-etait-reecrit-a-chaque-message.md) |
+| Plusieurs agents modifiaient les mêmes fichiers | Une branche et un worktree par conversation isolée, avec une fusion explicite. Les instantanés suivent le dossier de travail de cette conversation. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/worktrees.js) |
+| Les métriques variaient selon les fournisseurs et les fins de session | Normalisation des relevés, conversion des cumuls en deltas et conservation de la provenance des coûts. [Retour d'expérience](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/la-consommation-comptait-des-cumuls-et-perdait-des-turns.md) |
+| Modifier un réglage depuis l'interface salissait le dépôt déployé | Les valeurs versionnées de `config/` et les préférences de `data/settings.json` sont superposées. Les changements utilisateur restent séparés du code déployé. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/settings.js) |
+
+La stack reste volontairement compacte : **Node.js, Express, WebSocket, HTML/CSS/JavaScript vanilla**, avec trois dépendances npm directes et aucune étape de build. La persistance par fichiers correspond à l'échelle visée : un utilisateur et quelques centaines de conversations.
+
+Les décisions de boucle, de planification ou d'admission des webhooks sont séparées de leurs effets sur les processus et les fichiers. La suite utilise le test runner natif de Node.js ; GitHub Actions l'exécute sur les pushes et les pull requests avec Node.js 22. Les incidents et leurs causes sont documentés dans [`docs/solutions`](https://github.com/Purvanas/agenthub/tree/main/docs/solutions).
+
+### Architecture
 
 ```mermaid
 flowchart TB
-  subgraph toi [Toi]
-    pc[Ordinateur]
-    tel[Téléphone]
-  end
-  vpn[VPN — la page ne s'ouvre pas sur Internet]
-  subgraph machine [Ta machine]
-    ui[agentHub]
-    agents[Claude · Codex · Grok]
-    data["data/ — conversations, secrets, hors git"]
-  end
-  pc --> vpn --> ui
-  tel --> vpn
-  ui --> agents
-  agents --> data
-  agents --> projet[Projet, branche isolée, mise en ligne]
+    UI[Interface web · bureau et mobile]
+    SERVER[Serveur Node.js · Express et WebSocket]
+    ORCH[Orchestration · équipes, objectifs et déclencheurs]
+    RUNNER[Adaptateurs CLI · événements et sessions]
+    CLIS[Claude Code · Codex · Grok Build]
+    DATA["data/ · journaux, état et consommation"]
+    PROJECT[Projets · fichiers et worktrees Git]
+    MCP[Serveur MCP intégré · ask_user]
+
+    UI <-->|HTTP et WebSocket| SERVER
+    SERVER --> ORCH
+    ORCH --> RUNNER
+    RUNNER --> CLIS
+    CLIS -->|Événements JSONL| RUNNER
+    RUNNER --> DATA
+    SERVER <--> DATA
+    CLIS --> PROJECT
+    CLIS <-->|MCP · selon le fournisseur| MCP
+    MCP <--> SERVER
 ```
 
-## Ce qui le distingue
+## Démarrer
 
-Un chat qui appelle une API ne reprend pas une session, ne voit pas tes fichiers, et ne sait pas ce que le CLI a déjà fait. Ici l'agent est le CLI, avec tes skills, tes dépôts et les droits du compte. agentHub s'occupe du reste : reprendre le fil, isoler le travail, garder une trace, et te laisser trancher quand un choix serait coûteux à défaire.
+### Prérequis
 
-Le bind par défaut est `127.0.0.1`. **Ne publie pas ce port.** Un agent exécute du code avec tes droits. Pour y accéder depuis le téléphone, place la page derrière un VPN (Tailscale, WireGuard).
+- **Node.js 22 recommandé**, version utilisée par la CI.
+- **Git**, utilisé pour les instantanés et les worktrees.
+- **Au moins un CLI** parmi Claude Code, Codex et Grok Build, installé et authentifié sur la machine qui héberge agentHub.
 
-## Conversations
-
-- **Trois agents, une sidebar.** Claude, Codex, Grok. Chaque fil a un état : en cours, terminé, erreur, interrompu.
-- **Reprise réelle.** Le serveur garde l'identifiant de session du CLI. Rouvrir la conversation envoie la suite dans la même session.
-- **Connexion sans terminal.** Claude, Codex et Grok s'authentifient depuis la page (code appareil ou code à coller). Aucun shell distant : en ouvrir un doublerait la surface, pour rien.
-- **Un compte mort n'est pas « connecté ».** L'état vient d'une interrogation du CLI, pas de la présence d'un fichier. Les jetons ne sont jamais lus.
-- **Pièces jointes.** Images, Markdown, JSON. Le fichier est posé sur le disque et donné au CLI par chemin, pas recollé en base64 dans le prompt.
-- **Recherche.** Plein texte dans les fils, pas seulement le titre. L'index vit en mémoire et ne relit un journal que s'il a changé.
-- **Mode objectif.** Tu donnes un but. L'agent travaille, puis un second tour — dans la même conversation, en sortie structurée — dit si c'est atteint. Le juge n'est pas le tour qui vient de conclure.
-- **Prompts enregistrés.** Les consignes que tu retapes, avec des trous `{{nom}}`. Ce n'est pas une skill : le texte arrive dans le compositeur, tu le relis avant d'envoyer.
-- **Envoi différé.** « Envoie ça à 18 h dans cette conversation », avec le contexte déjà construit. Pour Claude, une copie gelée de la session peut partir plus tard sans figer le fil d'origine.
-
-Le contexte utile est celui du CLI, pas le journal de l'interface. **Compacter** demande au CLI de résumer. **Reprendre léger** ouvre une conversation neuve avec une note de passation, sans recopier un contexte saturé.
-
-## Relais
-
-Deux fournisseurs ne partagent pas de format de session, et leurs fenêtres de contexte ne font pas la même taille. Passer la main, c'est écrire une note, pas copier un fichier.
-
-La note reste dans les données d'agentHub. Elle ne va pas dans le dépôt du projet : un artefact d'outillage n'a rien à faire dans un commit.
-
-Une **équipe** enchaîne trois conversations visibles, que tu peux lire, couper ou reprendre :
-
-1. planifier, sur le dépôt ;
-2. coder, dans un worktree à lui ;
-3. relire, depuis un **autre** fournisseur, sur la branche — pas depuis le worktree du codeur.
-
-Le relecteur ne valide pas le travail du modèle qui vient de l'écrire. Supprimer la conversation du codeur n'emporte pas le sol sous le relecteur.
-
-## Déclencheurs
-
-Le planificateur vit dans le processus. Les échéances sont enregistrées : un redémarrage ne les oublie pas. L'heure est murale (`Europe/Paris` par défaut, `AGENTHUB_TZ` sinon). « Chaque jour à 7 h » part à 7 h, y compris au changement d'heure.
-
-| Fréquence | Rôle |
-|---|---|
-| Une fois | Un rendez-vous. Ne se réarme pas. |
-| Toutes les heures, toutes les 6 h | Cadence courte, calée sur la création. |
-| Jours choisis | Une heure de la journée. |
-| Webhook | Un événement (push, alerte, formulaire). Pas d'échéance. |
-
-Un webhook n'a pas le garde-fou d'une cadence. Deux protections : **une exécution à la fois** (l'événement suivant est refusé, pas mis en file), et **une minute minimum** entre deux lancements. Le jeton est le secret de l'URL. Le bind local fait le reste.
-
-À la fin, un second tour rédige le rapport dans la même conversation — sujet, statut, corps — puis un mail ou une notification peut partir. Le rapport n'est pas écrit dans la consigne de départ : à ce moment-là, le travail n'est pas fini.
-
-Les notifications (ntfy ou webhook) partent même téléphone éteint. Si la conversation est déjà ouverte devant toi, le téléphone ne sonne pas.
-
-## Git, sans se marcher dessus
-
-Deux conversations sur le même dossier écrivent les mêmes fichiers. Pire : l'instantané de l'une enregistre le travail de l'autre, et une restauration défait ce que personne ne lui a demandé.
-
-Un **worktree** par conversation : même dépôt, deux répertoires, deux branches `agenthub/…`. Rien n'est fusionné tout seul. Une branche qui porte du travail n'est pas supprimée.
-
-Avant chaque tour, un **instantané** des fichiers. Le rewind du CLI n'existe pas en mode non interactif, et réécrire sa session serait parier sur un format privé. Le filet est un dépôt git fantôme, rangé dans `data/`, dont le work-tree pointe vers le projet. Aucun `.git` n'est ajouté au projet. Ça marche sur un dépôt comme sur un dossier ordinaire.
-
-Le panneau de la conversation dessine le graphe du **vrai** dépôt : commits, parents, colonnes. Le placement est calculé dans l'app. Pas de bibliothèque de graphe.
-
-## Le projet, pas la conversation
-
-Notes, règles et mémoire sont rangées **par dépôt**. Une idée notée dans un fil se retrouve dans le suivant, quel que soit l'agent. Pour un worktree, la clé est le dépôt principal : chaque branche n'a pas sa liste.
-
-- **Notes.** Tickets `à faire` / `en cours` / `fait`, avec texte et images. La liste ouverte est donnée dans le prompt. Le détail s'obtient à la demande.
-- **Idées.** Une ligne `[idée] Titre — description` devient une carte. Un clic l'ajoute aux notes. Le marqueur est explicite : une liste de fichiers n'est pas une proposition.
-- **Plans et schémas.** Ce sont les fichiers du projet (`docs/plans/`, cadrages, mermaid), suivis par git. agentHub les découvre, les range (section, statut, date) et les édite. Il n'en garde pas de copie : une copie dériverait au premier edit de l'agent. Rien ne se supprime par cette voie.
-- **Règles.** « Ne pas pousser sur `main` », « prévenir après un déploiement ». Le prompt porte le nom et le moment. Le corps est lu quand le geste arrive. Une règle marquée « toujours » est recopiée en entier : elle ne doit pas dépendre du fait que l'agent ait pensé à la chercher.
-- **Mémoire.** Une leçon n'entre dans les tours suivants qu'une fois gardée. Elle n'est proposée qu'après un tour qui s'est cogné puis a fini. Le prompt est borné en nombre et en longueur.
-- **Questions.** L'agent appelle l'outil MCP `ask_user` et **attend**. Le tour n'est pas coupé. À utiliser quand un mauvais choix serait coûteux à défaire. Une préférence réversible, il la tranche.
-- **Skills.** Le catalogue vient du CLI (`/` dans le compositeur). Un atelier écrit de nouvelles skills ; l'agent pose les fichiers lui-même.
-
-## Navigateur et comptes
-
-Playwright MCP, optionnel, donne Chromium aux agents. Headless, il ne peut pas saisir un mot de passe à ta place. Quand une page le demande, la même session s'ouvre dans l'interface : image, clic, frappe, défilement. Le mot de passe n'est pas journalisé. Une fois la fenêtre fermée, le prochain Chromium retrouve les cookies.
-
-Si un agent est bloqué sur une connexion (Google, un hébergeur, un CLI), il dépose une demande : service, URL, raison. Tu valides dans la page. La session reste sur la machine.
-
-OAuth Google est optionnel (identité, Drive, Gmail, Calendar). Identifiants et jetons vivent dans `data/`, chiffrés avec une clé locale en `0600`. Rien de cela n'est versionné.
-
-## Consommation
-
-Un journal append-only, une ligne par tour et par modèle. Les agrégats se recalculent à la lecture : provider, modèle, semaine, projet. Les tarifs de `config/pricing.json` couvrent les CLIs qui ne chiffrent pas eux-mêmes.
-
-Les quotas d'abonnement sont lus chez le CLI, pas estimés. L'échéance de remise à zéro est une date, pas une phrase.
-
-## Sécurité
-
-L'app lance des agents. Le modèle de menace est celui d'un outil local, pas d'un site public.
-
-- **Écoute sur `127.0.0.1`.** Changer `HOST` pour ouvrir le port sur Internet expose l'exécution de code. Passe par un VPN.
-- **Pas de terminal web.** Les flux de connexion des trois CLIs sont parsés (URL, code). Rien d'autre n'est exposé.
-- **Secrets de projet.** L'agent connaît les **noms**. Les valeurs passent par l'environnement du process, en `0600`, hors du dépôt d'agentHub et hors du dépôt du projet. Elles ne reviennent pas au navigateur. Si une commande les affiche quand même, elles sont masquées dans le fil, le journal et le websocket avant d'arriver à l'écran.
-- **`data/` hors git.** Conversations, images, journal, notes, worktrees, jetons. Le détruire efface l'historique. Ce n'est pas récupérable depuis une révision.
-- **SMTP hors git.** `config/mail.json` n'est pas versionné. L'exemple versionné ne contient pas de mot de passe. Sans le fichier réel, l'envoi est simplement indisponible.
-- **Panneau machine en lecture seule**, si tu en branches un. Jeton GET, liste blanche de chemins. agentHub ne redémarre rien par là. Sans jeton, la vue est éteinte.
-- **Fichiers statiques en `no-cache`.** Un téléphone ne garde pas une interface périmée après un déploiement.
-
-## Téléphone et ordinateur
-
-La même page : menu, fil, compositeur, pièces jointes. Depuis le téléphone tu ouvres une conversation, tu choisis le dossier, tu lances l'agent. La présence passe par le websocket : un téléphone en veille est compté absent au bout d'un court silence, et une question sans personne devant l'écran déclenche la notification.
-
-La dictée au doigt tenu a besoin d'une page en HTTPS. Servie en HTTP derrière le VPN, c'est la touche micro du clavier qui écrit dans le champ.
-
-## Mettre un projet en ligne
-
-Les agents tournent **sur la machine**, avec les skills déjà installées. Une skill peut enchaîner l'écriture du projet, son lancement et sa publication : vhost, enregistrement DNS, URL publique à la fin du tour. Tu le fais depuis le bureau ou depuis le téléphone, dans la même conversation.
-
-agentHub n'achète pas de domaine et n'embarque aucun compte d'hébergeur. Il pilote les outils présents sur la machine. Les jetons de cette chaîne sont des secrets de projet : noms connus de l'agent, valeurs uniquement dans l'environnement, masquées si elles fuient dans une sortie.
-
-## Lancer
-
-Node 18 ou plus. Les CLIs que tu comptes utiliser sont installés et authentifiés sur la machine.
+Le projet est conçu autour d'un environnement serveur Linux et d'une exploitation avec PM2. Certaines intégrations, notamment le navigateur d'intervention avec Xvfb, ont des prérequis propres à cet environnement.
 
 ```bash
+git clone https://github.com/Purvanas/agenthub.git
+cd agenthub
 npm ci
-npm test
-HOST=127.0.0.1 PORT=3901 npm start
+npm start
 ```
 
-Ouvre [http://127.0.0.1:3901](http://127.0.0.1:3901).
+Ouvrir **[http://127.0.0.1:3901](http://127.0.0.1:3901)**, choisir un agent, un dossier de travail et un modèle, puis envoyer une première consigne. Les trois fournisseurs ne sont pas nécessaires : l'interface indique ceux qui sont disponibles.
 
-## Configuration
+### Exécution persistante avec PM2
 
-Les fichiers de `config/` sont relus à chaque usage. Pas de redémarrage.
-
-| Fichier | Rôle |
-|---|---|
-| `groups.json` | Dossiers proposés à la création d'une conversation |
-| `models.json` | Menu Modèle |
-| `pricing.json` | Tarifs, pour les CLIs qui ne chiffrent pas |
-| `notify.json` | Notifications (ntfy ou webhook). Désactivé tant que `enabled` est faux |
-| `browser.json` | Serveur MCP Playwright des agents |
-| `connections.json` | Navigateur humain temporaire |
-| `memory.json` | Mémoire de projet |
-| `mail.example.json` | À copier en `mail.json` pour l'envoi SMTP |
-
-La page **Paramètres** écrit dans `data/settings.json`, par-dessus ces défauts. Elle n'écrit pas dans `config/` : ça salirait le dépôt.
-
-### Variables d'environnement
-
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `HOST` | `127.0.0.1` | Adresse d'écoute. Laisser le défaut. |
-| `PORT` | `3901` | Port |
-| `AGENTHUB_TZ` | `Europe/Paris` | Heure murale des déclencheurs |
-| `AGENTHUB_DATA` | `./data` | État local |
-| `AGENTHUB_GROK_BIN` | `grok` | Binaire Grok |
-| `AGENTHUB_CLAUDE_BIN` | `claude` | Binaire Claude |
-| `AGENTHUB_CODEX_BIN` | `codex` | Binaire Codex |
-| `AGENTHUB_MCP_URL` | `http://HOST:PORT/mcp` | Outil `ask_user` servi aux agents |
-| `AGENTHUB_GOOGLE_REDIRECT_URI` | — | Callback OAuth Google |
-| `AGENTHUB_PANEL_URL` | `http://127.0.0.1:3100` | Panneau machine, appel local. Inerte sans jeton |
-| `AGENTHUB_PANEL_WEB_URL` | `http://127.0.0.1:8080` | Même panneau, URL ouvrable depuis le navigateur |
-| `AGENTHUB_PANEL_TOKEN_FILE` | — | Fichier du jeton GET. Absent : la vue est éteinte |
-
-## Tenir sous PM2
-
-`ecosystem.config.js` pose `treekill: false`. Un `pm2 restart` ne tue pas le CLI d'un tour en cours. Le flux passe par un fichier : un pipe se fermerait avec le lecteur, et le process survivant se bloquerait.
+Si PM2 est installé :
 
 ```bash
 pm2 start ecosystem.config.js
 pm2 save
 ```
 
-Ne pas lancer avec `pm2 start server.js` : ce réglage disparaît. `pm2 delete` puis un start direct aussi.
-
-PM2 ne charge pas `.bashrc`. Les binaires doivent être trouvables sans ça, ou pointés par les variables ci-dessus.
-
-## Tests
+Pour les redémarrages suivants :
 
 ```bash
-npm test
-npm run check
+pm2 restart agentHub
 ```
 
-`npm run check` vérifie la syntaxe de chaque fichier JS, puis la suite. Les tests n'ont pas besoin des CLIs : les flux sont rejoués depuis des fixtures.
+Utiliser le fichier `ecosystem.config.js` dès le premier lancement : il contient `treekill: false`, nécessaire pour préserver les processus CLI pendant un redémarrage d'agentHub. Le flux fichier et ce réglage fonctionnent ensemble. Cette reprise concerne le redémarrage de l'application ; elle ne fait pas survivre un processus à l'arrêt de la machine.
+
+### Configuration et données
+
+Les fichiers de `config/` fournissent les valeurs par défaut. La page **Paramètres** enregistre ses modifications dans `data/settings.json`. Les réglages concernés sont relus à l'usage, sans redémarrage.
+
+| Fichier | Rôle |
+|---|---|
+| `groups.json` | Dossiers de projets et regroupements proposés. |
+| `models.json` | Modèles proposés dans le sélecteur. |
+| `pricing.json` | Tarifs servant au calcul des coûts estimés. |
+| `memory.json` | Mémoire de projet. |
+| `notify.json` | Notifications ntfy ou webhook. |
+| `mail.example.json` | Exemple SMTP à copier en `mail.json` si nécessaire. |
+| `browser.json` | Serveur MCP Playwright externe ; désactivé par défaut. |
+| `connections.json` | Module Playwright et profil du navigateur d'intervention. |
+
+`config/mail.json` reste hors Git. Les connexions Google se configurent dans l'interface et conservent leurs données dans `data/`.
+
+| Variable d'environnement | Valeur par défaut | Usage |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Adresse d'écoute. |
+| `PORT` | `3901` | Port HTTP et WebSocket. |
+| `AGENTHUB_TZ` | `Europe/Paris` | Fuseau de la planification. |
+| `AGENTHUB_DATA` | `./data` à la racine du projet | Emplacement des données applicatives. |
+| `AGENTHUB_CLAUDE_BIN` | `claude` | Binaire Claude Code. |
+| `AGENTHUB_CODEX_BIN` | `codex` | Binaire Codex. |
+| `AGENTHUB_GROK_BIN` | `grok` | Binaire Grok Build. |
+| `AGENTHUB_MCP_URL` | URL locale calculée depuis `HOST` et `PORT` | URL MCP annoncée aux agents. |
+| `AGENTHUB_GOOGLE_REDIRECT_URI` | `http://127.0.0.1:3901/api/connections/google/callback` | Callback OAuth Google. |
+
+**Sauvegarder `data/`** : ce dossier, exclu de Git, contient notamment les conversations, journaux d'exécution, notes, secrets, images et worktrees. Sa suppression entraîne une perte de données ; une copie du dépôt ne le remplace pas.
+
+### Cadre d'utilisation et limites
+
+**agentHub est un outil personnel à garder sur localhost ou sur un réseau privé de confiance.** Les CLIs sont lancés avec des permissions étendues et peuvent exécuter du code avec les droits du compte serveur. Ne pas exposer directement le service sur Internet ; pour un accès distant, utiliser un réseau privé tel que Tailscale ou WireGuard et une adresse d'écoute adaptée.
+
+- **Les capacités dépendent du CLI.** Le fork natif est pris en charge pour Claude et Grok ; Codex utilise la note de passation. Le compactage explicite est disponible pour Claude et Grok. Les évolutions de leurs protocoles peuvent demander une adaptation des intégrations.
+- **L'isolation Git porte sur les fichiers et les branches.** Certains dossiers de dépendances sont partagés par liens symboliques pour éviter leur duplication. Un worktree ne constitue pas un environnement d'exécution isolé.
+- **Le navigateur Playwright est partagé.** Plusieurs agents naviguant simultanément peuvent interférer ; l'intervention humaine demande aussi de libérer ce profil. Grok nécessite une inscription MCP globale effectuée hors de l'application.
+- **La planification vit dans le processus serveur.** Les lancements demandent qu'agentHub fonctionne ; le mécanisme ne remplace pas un ordonnanceur distribué.
+- **Le masquage des secrets réduit l'exposition accidentelle.** Les secrets de projet sont stockés hors Git avec des permissions de fichier restrictives, sans chiffrement applicatif. Le masquage ne protège pas contre un agent capable de lire et transformer une valeur.
+
+## À propos
+
+Je développe agentHub comme un outil personnel que j'utilise et fais évoluer au quotidien. Ce projet reflète les sujets sur lesquels j'aime travailler : rendre les agents utiles dans un vrai workflow, comprendre leurs modes d'échec et construire les outils qui permettent de les piloter. Il donne un aperçu de cette approche, du besoin jusqu'aux détails d'exécution, de persistance et d'exploitation.
 
 ## Licence
 
-[MIT](LICENSE).
+[MIT](https://github.com/Purvanas/agenthub/blob/main/LICENSE) — © 2026 Purvanas.
