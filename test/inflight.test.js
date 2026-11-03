@@ -20,10 +20,25 @@ const inflight = require('../lib/inflight');
 const CONV = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 
 test('un turn ouvert est retrouvable, avec ses fichiers de flux', () => {
-  const rec = inflight.open({ convId: CONV, pid: 4242, provider: 'claude' });
+  const modelSelection = {
+    model: 'opus',
+    launchedModel: 'opus',
+    effort: 'high',
+    launchedEffort: 'high',
+    mode: 'pinned',
+    source: 'user',
+    startedAt: new Date().toISOString(),
+  };
+  const rec = inflight.open({
+    convId: CONV,
+    pid: 4242,
+    provider: 'claude',
+    modelSelection,
+  });
   assert.equal(rec.offset, 0);
   assert.equal(rec.pid, 4242);
   assert.ok(rec.out.endsWith(`${CONV}.jsonl`));
+  assert.deepEqual(rec.modelSelection, modelSelection);
 
   const found = inflight.list();
   assert.equal(found.length, 1);
@@ -42,6 +57,7 @@ test('la position survit à un rechargement du module', () => {
   delete require.cache[require.resolve('../lib/inflight')];
   const relu = require('../lib/inflight');
   assert.equal(relu.list()[0].offset, 128);
+  assert.equal(relu.list()[0].modelSelection.launchedModel, 'opus');
 });
 
 test('fermer un turn efface son enregistrement et ses fichiers', () => {

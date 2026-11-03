@@ -17,7 +17,7 @@ process.env.AGENTHUB_DATA = DATA;
 
 const memory = require('../lib/memory');
 
-const PROJECT = '.';
+const PROJECT = '/srv/projects/demo-app';
 const OK = { outcome: 'done', project: PROJECT, items: [{ isError: true }], pending: false };
 
 test.beforeEach(() => fs.rmSync(memory.FILE, { force: true }));
@@ -71,7 +71,7 @@ test('une fiche gardee entre dans le prompt, une ecartee non', () => {
 test('la memoire d un projet ne fuit pas dans un autre', () => {
   const a = memory.propose({ project: PROJECT, convId: 'c1', title: 'Ici', lesson: 'A.' });
   memory.decide(a.id, 'kept');
-  assert.equal(memory.promptBlock('/tmp/site'), '');
+  assert.equal(memory.promptBlock('/var/www/site'), '');
 });
 
 test('une lecon multiligne est repliee sur une ligne du prompt', () => {

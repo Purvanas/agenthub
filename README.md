@@ -10,8 +10,9 @@ Sessions persistantes, orchestration entre fournisseurs et suivi des exécutions
 [![JavaScript](https://img.shields.io/badge/JavaScript-vanilla-F7DF1E?logo=javascript&logoColor=black)](https://github.com/Purvanas/agenthub/blob/main/package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-Express%20%2B%20WebSocket-339933?logo=nodedotjs&logoColor=white)](https://github.com/Purvanas/agenthub/blob/main/package.json)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/Purvanas/agenthub/blob/main/LICENSE)
+[![Tests](https://github.com/Purvanas/agenthub/actions/workflows/test.yml/badge.svg)](https://github.com/Purvanas/agenthub/actions/workflows/test.yml)
 
-[Pourquoi agentHub](#pourquoi-agenthub) · [Du ticket à la relecture](#du-ticket-à-la-relecture) · [Ingénierie](#quelques-choix-dingénierie) · [Environnement](#environnement-et-exploitation)
+[Pourquoi agentHub](#pourquoi-agenthub) · [Du ticket à la relecture](#du-ticket-à-la-relecture) · [Ingénierie](#quelques-choix-dingénierie) · [Architecture](#architecture) · [Environnement](#environnement-et-exploitation)
 
 </div>
 
@@ -78,7 +79,11 @@ Le serveur MCP intégré expose `ask_user`. L'appel attend la réponse de l'util
 
 ## Savoir ce qui tourne, ce qui change et ce que cela consomme
 
-Les conversations sont organisées par dossiers, filtrables par fournisseur et accessibles sur une interface adaptée au bureau comme au mobile. La recherche plein texte retrouve aussi les commandes, résultats d'outils et références à des fichiers dans les anciens échanges. Une file de messages permet de préparer les prochaines consignes pendant une exécution.
+Les conversations sont organisées par dossiers, filtrables par fournisseur et accessibles sur une interface adaptée au bureau comme au mobile. Une vue **Espace de travail** réunit les projets connus, leurs conversations actives et leurs archives ; la recherche plein texte retrouve aussi les commandes, résultats d'outils et références à des fichiers dans les anciens échanges. Une file de messages permet de préparer les prochaines consignes pendant une exécution.
+
+Les fils anciens ne sont plus envoyés intégralement au navigateur. L'interface charge les échanges récents par pages — 50 éléments sur mobile, 100 sur bureau — puis remonte dans l'historique à la demande. Un index SQLite dérivé est tenu dans un worker séparé pour servir pages et recherche sans remplacer les journaux JSONL, qui restent la source de vérité. Les sorties d'outils volumineuses arrivent sous forme d'aperçus et leur contenu complet n'est demandé que si l'utilisateur l'ouvre. [Retour d'expérience](docs/solutions/les-conversations-longues-bloquaient-le-mobile.md)
+
+Le choix du modèle suit la même exigence de lisibilité : l'interface distingue le modèle du **prochain message**, celui du tour **en cours** et le **dernier relevé**. Elle indique aussi si ce dernier a été mesuré, seulement demandé ou non confirmé par le CLI. Un changement est enregistré avant que l'envoi soit autorisé ; l'utilisateur n'a pas à lancer un message pour découvrir quel modèle sera demandé.
 
 Pour travailler sur le code, agentHub associe **worktrees par conversation, consultation des différences et graphe de commits**. Des instantanés des fichiers sont pris avant les tours dans un dépôt Git séparé : on peut consulter les changements et restaurer un état sans ajouter de commits techniques dans l'historique du projet. La restauration concerne les fichiers, pas le contexte interne du modèle.
 
@@ -110,13 +115,18 @@ Le projet couvre toute la chaîne d'un outil pour agents : intégration des CLIs
 | Trois CLIs aux formats et capacités différents | Une table de fournisseurs centralise la construction des arguments, la traduction des événements et les capacités disponibles. L'interface s'adapte aux possibilités réelles de chacun. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/runner.js) |
 | Un redémarrage du serveur coupait le travail en cours | Le flux CLI passe par un fichier, avec un curseur de traitement persistant. Associé à `treekill: false` dans PM2, ce mécanisme permet de retrouver un processus survivant et reprendre la lecture de son flux après le redémarrage applicatif. [Explication](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/reprendre-un-turn-apres-redemarrage.md) |
 | L'historique devenait de plus en plus coûteux à enregistrer | Un cas documenté de 9,2 Mo bloquait la boucle d'événements environ 65 ms par sauvegarde. Les métadonnées sont désormais séparées d'un journal JSONL en ajout : l'écriture d'un élément dépend de sa taille plutôt que de celle du fil entier. [Explication](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/le-fil-entier-etait-reecrit-a-chaque-message.md) |
+| Les longues conversations bloquaient l'ouverture sur mobile | Pagination stable par identifiants, index SQLite reconstruit depuis les JSONL dans un worker et chargement différé des sorties d'outils complètes. [Explication](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/les-conversations-longues-bloquaient-le-mobile.md) |
+| Un changement de modèle n'était visible qu'après l'envoi | Le serveur fige la sélection au lancement du tour et expose séparément la configuration suivante, l'exécution active et le dernier relevé avec sa provenance. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/model-selection.js) |
 | Plusieurs agents modifiaient les mêmes fichiers | Une branche et un worktree par conversation isolée, avec une fusion explicite. Les instantanés suivent le dossier de travail de cette conversation. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/worktrees.js) |
 | Les métriques variaient selon les fournisseurs et les fins de session | Normalisation des relevés, conversion des cumuls en deltas et conservation de la provenance des coûts. [Retour d'expérience](https://github.com/Purvanas/agenthub/blob/main/docs/solutions/la-consommation-comptait-des-cumuls-et-perdait-des-turns.md) |
 | Modifier un réglage depuis l'interface salissait le dépôt déployé | Les valeurs versionnées de `config/` et les préférences de `data/settings.json` sont superposées. Les changements utilisateur restent séparés du code déployé. [Code](https://github.com/Purvanas/agenthub/blob/main/lib/settings.js) |
+| Le serveur et l'interface concentraient trop de responsabilités | Les contrôleurs HTTP sont regroupés par domaine, les règles métier restent dans `lib/` et le rendu des messages est une fabrique testable indépendante de l'état global. [Architecture](docs/architecture.md) |
 
-La stack reste volontairement compacte : **Node.js, Express, WebSocket, HTML/CSS/JavaScript vanilla**, avec trois dépendances npm directes et aucune étape de build. La persistance par fichiers correspond à l'échelle visée : un utilisateur et quelques centaines de conversations.
+La stack reste volontairement compacte : **Node.js, Express, WebSocket, HTML/CSS/JavaScript vanilla**, avec trois dépendances npm directes et aucune étape de build. Les fichiers restent la persistance de référence ; SQLite est uniquement un index dérivé et recréable pour la lecture et la recherche.
 
-Les décisions de boucle, de planification ou d'admission des webhooks sont séparées de leurs effets sur les processus et les fichiers. La suite utilise le test runner natif de Node.js ; GitHub Actions l'exécute sur les pushes et les pull requests avec Node.js 22. Les incidents et leurs causes sont documentés dans [`docs/solutions`](https://github.com/Purvanas/agenthub/tree/main/docs/solutions).
+Les décisions de boucle, de planification ou d'admission des webhooks sont séparées de leurs effets sur les processus et les fichiers. La suite utilise le test runner natif de Node.js. Elle couvre les contrats de domaine, les courses asynchrones du front et des parcours réels HTTP, WebSocket et reprise après redémarrage avec de faux CLIs déterministes. Le workflow GitHub Actions est configuré pour l'exécuter sur Node.js 22 et 24, sur les pull requests et les mises à jour de `main`.
+
+Les incidents et leurs causes sont documentés dans [`docs/solutions`](https://github.com/Purvanas/agenthub/tree/main/docs/solutions). Les frontières du code sont détaillées dans [l'architecture](docs/architecture.md) et les règles d'évolution dans le [guide de maintenance](docs/maintainability.md).
 
 ### Architecture
 
@@ -124,20 +134,25 @@ Les décisions de boucle, de planification ou d'admission des webhooks sont sép
 flowchart TB
     UI[Interface web · bureau et mobile]
     SERVER[Serveur Node.js · Express et WebSocket]
+    HTTP[Contrôleurs HTTP par domaine]
     ORCH[Orchestration · équipes, objectifs et déclencheurs]
     RUNNER[Adaptateurs CLI · événements et sessions]
     CLIS[Claude Code · Codex · Grok Build]
-    DATA["data/ · journaux, état et consommation"]
+    DATA["Journaux JSONL · source de vérité"]
+    INDEX["Worker · index SQLite dérivé"]
     PROJECT[Projets · fichiers et worktrees Git]
     MCP[Serveur MCP intégré · ask_user]
 
     UI <-->|HTTP et WebSocket| SERVER
-    SERVER --> ORCH
+    SERVER --> HTTP
+    HTTP --> ORCH
     ORCH --> RUNNER
     RUNNER --> CLIS
     CLIS -->|Événements JSONL| RUNNER
     RUNNER --> DATA
-    SERVER <--> DATA
+    HTTP <--> DATA
+    HTTP <--> INDEX
+    INDEX -->|lecture seulement| DATA
     CLIS --> PROJECT
     CLIS <-->|MCP · selon le fournisseur| MCP
     MCP <--> SERVER
@@ -147,7 +162,7 @@ flowchart TB
 
 agentHub est développé pour mon environnement serveur Linux, avec des CLIs installés et authentifiés sur la machine et une exploitation via PM2. Les intégrations s'appuient sur les services disponibles dans cette architecture : serveur MCP Playwright, profil de navigateur persistant, configuration SMTP ou panneau d'administration externe.
 
-L'application utilise Node.js et Git, sans étape de build. Sa configuration sépare les valeurs versionnées de `config/` des préférences enregistrées dans `data/settings.json`. Les conversations, journaux, secrets, images et worktrees restent dans `data/`, hors Git : ce dossier doit être sauvegardé indépendamment du dépôt.
+L'application utilise Node.js 22 ou 24 et Git, sans étape de build. Sa configuration sépare les valeurs versionnées de `config/` des préférences enregistrées dans `data/settings.json`. Les conversations, journaux, secrets, images et worktrees restent dans `data/`, hors Git : ce dossier doit être sauvegardé indépendamment du dépôt. L'index SQLite peut être reconstruit ; les journaux JSONL, eux, ne le peuvent pas.
 
 Le redémarrage applicatif repose sur deux mécanismes complémentaires : `treekill: false` dans la configuration PM2 et la lecture du flux CLI depuis un fichier. Ils permettent de retrouver une exécution dont le processus a survécu au redémarrage d'agentHub, sans couvrir l'arrêt de la machine.
 

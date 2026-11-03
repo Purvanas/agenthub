@@ -64,7 +64,7 @@ test('le mail porte le nom du déclencheur, le contexte et le lien', () => {
       id: 'abc',
       provider: 'claude',
       model: 'sonnet',
-      cwd: '/tmp/x',
+      cwd: '/var/www/x',
       totalCostUsd: 0.1234,
     },
     appUrl: 'http://exemple/',
@@ -72,7 +72,7 @@ test('le mail porte le nom du déclencheur, le contexte et le lien', () => {
 
   assert.equal(mail.subject, '[Veille deps] Tout va bien');
   assert.ok(mail.text.startsWith('Rien à signaler.'));
-  assert.ok(mail.text.includes('rien à signaler · claude · sonnet · /tmp/x'), mail.text);
+  assert.ok(mail.text.includes('rien à signaler · claude · sonnet · /var/www/x'), mail.text);
   assert.ok(mail.text.includes('0.1234 $'));
   // Une seule barre oblique : l'URL de base peut en porter une, l'ancre aussi.
   assert.ok(mail.text.includes('http://exemple/#abc'), mail.text);

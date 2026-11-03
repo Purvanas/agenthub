@@ -27,18 +27,18 @@ test('le prompt de compactage est /compact, avec consigne optionnelle', () => {
 
 test('une note synthétique reprend titre, objectif et derniers messages utiles', () => {
   const note = ctx.syntheticNote({
-    title: 'Galerie interne',
+    title: 'Galerie de démonstration',
     goal: { text: 'Peupler les galeries' },
-    cwd: '/tmp/projet',
+    cwd: '/srv/projects/demo-gallery',
     provider: 'grok',
     model: 'grok-4.5',
     contextTokens: 1_382_188,
     contextWindow: 500_000,
     status: 'error',
     items: [
-      { kind: 'user', text: 'Ajoute Alice Martin' },
+      { kind: 'user', text: 'Ajoute la collection paysages' },
       { kind: 'text', text: 'Fiche créée, 101 images.' },
-      { kind: 'user', text: 'Ajoute : Bob Dupont' },
+      { kind: 'user', text: 'Ajoute la collection portraits' },
       { kind: 'thinking', text: 'ignoré' },
       { kind: 'tool', tool: 'Bash' },
       {
@@ -53,11 +53,11 @@ test('une note synthétique reprend titre, objectif et derniers messages utiles'
   assert.match(note, /Peupler les galeries/);
   assert.match(note, /## Décisions prises/);
   assert.match(note, /## Ce qui reste à faire/);
-  assert.match(note, /Bob Dupont/);
-  assert.match(note, /Alice Martin/);
+  assert.match(note, /collection portraits/);
+  assert.match(note, /collection paysages/);
   assert.match(note, /Échec du turn/);
   assert.match(note, /1[\s]?382[\s]?188|1382188/);
-  assert.match(note, /\/tmp\/projet/);
+  assert.match(note, /\/srv\/projects\/demo-gallery/);
   // Pas de dump monstrueux : les longs textes sont tronqués.
   assert.ok(note.length < 4000);
   assert.ok(!note.includes('x'.repeat(800)));

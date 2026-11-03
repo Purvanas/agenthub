@@ -32,12 +32,35 @@ function reload() {
 
 const NEW = { provider: 'claude', cwd: '/tmp', title: 'Essai' };
 
+test('un identifiant ne peut ni lire ni effacer un fichier hors du dossier conv', () => {
+  // Ces fichiers restent dans le DATA temporaire du test : rien hors sandbox n'est touché.
+  const outsideMeta = path.join(DATA, 'outside.json');
+  const outsideItems = path.join(DATA, 'outside.jsonl');
+  fs.writeFileSync(outsideMeta, JSON.stringify({ id: '../outside', title: 'secret', items: [] }));
+  fs.writeFileSync(outsideItems, `${JSON.stringify({ id: 'x', text: 'secret' })}\n`);
+
+  for (const malicious of ['../outside', '..\\outside', '/outside', 'a/b', 'a%2Fb']) {
+    assert.equal(store.get(malicious), null);
+    assert.deepEqual(store.remove(malicious), []);
+    assert.equal(store.purge(malicious), false);
+    assert.throws(
+      () => store.itemsFile(malicious),
+      (err) => err && err.status === 400 && err.code === 'INVALID_CONVERSATION_ID'
+    );
+  }
+
+  assert.equal(fs.readFileSync(outsideMeta, 'utf8').includes('secret'), true);
+  assert.equal(fs.readFileSync(outsideItems, 'utf8').includes('secret'), true);
+  assert.match(store.itemsFile('c1'), /c1\.jsonl$/);
+  assert.match(store.itemsFile('atelier-skills'), /atelier-skills\.jsonl$/);
+});
+
 test('le dossier de projet est créé une fois, puis réutilisé', () => {
-  const first = store.folderForCwd('/tmp/SampleApp');
-  assert.equal(first.name, 'SampleApp', 'nommé par le dernier segment du chemin');
-  assert.equal(store.folderForCwd('/tmp/SampleApp').id, first.id, 'pas de doublon');
+  const first = store.folderForCwd('/srv/projects/MyApp');
+  assert.equal(first.name, 'MyApp', 'nommé par le dernier segment du chemin');
+  assert.equal(store.folderForCwd('/srv/projects/MyApp').id, first.id, 'pas de doublon');
   // Une barre oblique finale désigne le même projet.
-  assert.equal(store.folderForCwd('/tmp/SampleApp/').id, first.id);
+  assert.equal(store.folderForCwd('/srv/projects/MyApp/').id, first.id);
 });
 
 test('deux projets de même nom ne partagent pas de dossier', () => {
@@ -78,6 +101,56 @@ test('les items vont dans le journal, pas dans le fichier de métadonnées', () 
   assert.equal(JSON.parse(lines[0]).text, 'bonjour');
 });
 
+test('le cache faible conserve la même référence tant qu’elle est utilisée', () => {
+  const conv = store.create(NEW);
+  conv.queue = [{ id: 'q1', text: 'à garder' }];
+  const meta = store.updateMeta(conv.id, { title: 'Titre léger' });
+  assert.equal(meta.items, undefined);
+  assert.deepEqual(conv.queue, [{ id: 'q1', text: 'à garder' }]);
+  assert.equal(conv.title, 'Titre léger');
+  assert.strictEqual(store.get(conv.id), conv);
+  store.flush();
+  assert.strictEqual(store.get(conv.id), conv);
+});
+
+test('un flush partiellement en échec conserve chaque écriture à rejouer', () => {
+  const s = store;
+  const first = s.create({ ...NEW, title: 'Premier' });
+  const second = s.create({ ...NEW, title: 'Second' });
+  const firstFile = path.join(DATA, 'conv', `${first.id}.json`);
+  const secondFile = path.join(DATA, 'conv', `${second.id}.json`);
+  const indexFile = path.join(DATA, 'index.json');
+
+  const realRename = fs.renameSync;
+  const realError = console.error;
+  let failFirst = true;
+  let failIndex = true;
+  fs.renameSync = (from, to) => {
+    if (failFirst && to === firstFile) {
+      failFirst = false;
+      throw new Error('échec conversation simulé');
+    }
+    if (failIndex && to === indexFile) {
+      failIndex = false;
+      throw new Error('échec index simulé');
+    }
+    return realRename(from, to);
+  };
+  console.error = () => {};
+  try {
+    assert.equal(s.flush(), false);
+  } finally {
+    fs.renameSync = realRename;
+    console.error = realError;
+  }
+
+  assert.equal(fs.existsSync(firstFile), false, 'la conversation en échec reste en attente');
+  assert.equal(fs.existsSync(secondFile), true, 'une erreur ne bloque pas les suivantes');
+  assert.equal(s.flush(), true, 'le flush suivant rejoue conversation et index');
+  assert.equal(fs.existsSync(firstFile), true);
+  assert.ok(JSON.parse(fs.readFileSync(indexFile, 'utf8')).conversations.some((c) => c.id === first.id));
+});
+
 test('un item est relu identique après rechargement', () => {
   const conv = store.create(NEW);
   const item = store.addItem(conv.id, { kind: 'tool', tool: 'Bash', input: { command: 'ls' } });
@@ -108,6 +181,20 @@ test('un item modifié garde sa place et sa dernière version gagne', () => {
   assert.equal(items[2].text, 'dernier');
 });
 
+test('ouvrir un journal très révisé ne le réécrit pas et garde la dernière version', () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  const item = s.addItem(conv.id, { kind: 'tool', tool: 'Read', result: 'initial' });
+  for (let n = 0; n < 70; n += 1) {
+    item.result = `version ${n}`;
+    s.touchItem(conv.id, item);
+  }
+  const before = fs.readFileSync(s.itemsFile(conv.id), 'utf8');
+  const fresh = reload();
+  assert.equal(fresh.get(conv.id).items[0].result, 'version 69');
+  assert.equal(fs.readFileSync(s.itemsFile(conv.id), 'utf8'), before);
+});
+
 test('une ligne tronquée par un crash ne fait pas perdre le reste du fil', () => {
   const store2 = reload();
   const conv = store2.create(NEW);
@@ -120,6 +207,90 @@ test('une ligne tronquée par un crash ne fait pas perdre le reste du fil', () =
 
   const items = reload().get(conv.id).items;
   assert.deepEqual(items.map((i) => i.text), ['avant', 'après']);
+});
+
+test('un nouvel item après une dernière ligne tronquée reste lisible', () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  s.addItem(conv.id, { kind: 'text', text: 'avant' });
+  fs.appendFileSync(s.itemsFile(conv.id), '{"id":"cassé"');
+  const afterCrash = reload();
+  afterCrash.addItem(conv.id, { kind: 'text', text: 'sauvé' });
+  assert.deepEqual(reload().get(conv.id).items.map((item) => item.text), ['avant', 'sauvé']);
+});
+
+test('getMeta ne lit pas le journal et expose projet et archivage', () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  s.update(conv.id, { archived: true, worktree: { repo: '/srv/repo', path: '/tmp/wt', branch: 'x' } });
+  s.addItem(conv.id, { kind: 'text', text: 'contenu' });
+  s.flush();
+  const fresh = reload();
+  const journal = fresh.itemsFile(conv.id);
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => {
+    if (file === journal) throw new Error('le journal ne devait pas être lu');
+    return realRead(file, ...args);
+  };
+  try {
+    const meta = fresh.getMeta(conv.id);
+    assert.equal(meta.items, undefined);
+    assert.equal(meta.archived, true);
+    assert.equal(meta.project, '/srv/repo');
+    const entry = fresh.list().find((candidate) => candidate.id === conv.id);
+    assert.equal(entry.project, '/srv/repo');
+    assert.equal(entry.archived, true);
+    const updated = fresh.updateMeta(conv.id, { status: 'idle', title: 'Sans journal', items: ['interdit'] });
+    assert.equal(updated.status, 'idle');
+    assert.equal(updated.title, 'Sans journal');
+    assert.equal(updated.items, undefined);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.deepEqual(fresh.get(conv.id).items.map((item) => item.text), ['contenu']);
+});
+
+test("l'index ancien retrouve le dépôt principal d'un worktree sans lire le journal", () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  s.update(conv.id, {
+    cwd: '/srv/repo/data/worktrees/branche-test',
+    worktree: { repo: '/srv/repo', path: '/srv/repo/data/worktrees/branche-test', branch: 'agent/test' },
+    privateToken: 'ne doit jamais rejoindre la sidebar',
+  });
+  s.addItem(conv.id, { kind: 'text', text: 'journal lourd simulé' });
+  s.flush();
+
+  const indexFile = path.join(DATA, 'index.json');
+  const legacy = JSON.parse(fs.readFileSync(indexFile, 'utf8'));
+  const oldEntry = legacy.conversations.find((entry) => entry.id === conv.id);
+  delete oldEntry.project;
+  fs.writeFileSync(indexFile, JSON.stringify(legacy, null, 2));
+
+  delete require.cache[require.resolve('../lib/store')];
+  const realRead = fs.readFileSync;
+  const journal = path.join(DATA, 'conv', `${conv.id}.jsonl`);
+  const metaFile = path.join(DATA, 'conv', `${conv.id}.json`);
+  let metaReads = 0;
+  fs.readFileSync = (file, ...args) => {
+    if (file === journal) throw new Error('le journal ne devait pas être lu');
+    if (file === metaFile) metaReads += 1;
+    return realRead(file, ...args);
+  };
+  try {
+    current = require('../lib/store');
+    const entry = current.list().find((candidate) => candidate.id === conv.id);
+    assert.equal(entry.project, '/srv/repo');
+    assert.equal(entry.privateToken, undefined);
+    current.list();
+    assert.equal(metaReads, 1, 'la migration est mise en cache après le premier list()');
+  } finally {
+    fs.readFileSync = realRead;
+  }
+
+  current.flush();
+  const migrated = JSON.parse(fs.readFileSync(indexFile, 'utf8'));
+  assert.equal(migrated.conversations.find((entry) => entry.id === conv.id).project, '/srv/repo');
 });
 
 test("l'ancien format — items dans le .json — est migré à la lecture", () => {
@@ -146,6 +317,45 @@ test("l'ancien format — items dans le .json — est migré à la lecture", () 
   // Et sur disque : journal créé, métadonnées allégées.
   assert.ok(fs.existsSync(fresh.itemsFile(id)));
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).items, undefined);
+});
+
+test('un JSON corrompu est signalé au lieu d’être pris pour une conversation absente', () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  s.flush();
+  const file = path.join(DATA, 'conv', `${conv.id}.json`);
+  const valid = fs.readFileSync(file, 'utf8');
+
+  const fresh = reload();
+  fs.writeFileSync(file, '{"id":');
+  assert.throws(() => fresh.get(conv.id), /lecture JSON impossible/);
+
+  // Le fichier n'a pas été écrasé par un fallback vide et reste récupérable.
+  fs.writeFileSync(file, valid);
+  assert.equal(fresh.get(conv.id).id, conv.id);
+});
+
+test('une erreur de lecture du journal est signalée au lieu de produire un faux fil vide', () => {
+  const s = reload();
+  const conv = s.create(NEW);
+  s.addItem(conv.id, { kind: 'text', text: 'à préserver' });
+  s.flush();
+  const fresh = reload();
+  const journal = fresh.itemsFile(conv.id);
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => {
+    if (file === journal) {
+      const err = new Error('permission refusée simulée');
+      err.code = 'EACCES';
+      throw err;
+    }
+    return realRead(file, ...args);
+  };
+  try {
+    assert.throws(() => fresh.get(conv.id), /lecture du journal impossible/);
+  } finally {
+    fs.readFileSync = realRead;
+  }
 });
 
 test('supprimer une conversation emporte son journal', () => {
@@ -181,6 +391,35 @@ test('un dossier supprimé libère ses conversations sans les emporter', () => {
   store2.removeFolder(folder.id);
   assert.equal(store2.get(conv.id).folder, null);
   assert.ok(store2.list().some((c) => c.id === conv.id));
+});
+
+test('détacher ou libérer un fil ancien ne relit jamais son gros journal', () => {
+  let s = reload();
+  const folder = s.createFolder('À retirer');
+  const parent = s.create(NEW);
+  const child = s.create({ ...NEW, parentId: parent.id, folder: folder.id });
+  s.addItem(child.id, { kind: 'text', text: 'contenu lourd simulé' });
+  s.flush();
+  s = reload(); // aucun objet conversation ne reste dans le cache de cette instance
+
+  const journal = s.itemsFile(child.id);
+  const realRead = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => {
+    if (file === journal) throw new Error('le journal ne devait pas être lu');
+    return realRead(file, ...args);
+  };
+  try {
+    assert.deepEqual(s.remove(parent.id), [child.id]);
+    s.removeFolder(folder.id);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+
+  s.flush();
+  s = reload();
+  const meta = s.getMeta(child.id);
+  assert.equal(meta.parentId, null);
+  assert.equal(meta.folder, null);
 });
 
 // L'ordre des dossiers. Il n'a pas de champ dédié : c'est l'ordre du tableau, donc ces tests

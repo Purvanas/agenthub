@@ -20,33 +20,33 @@ const PIXEL =
 
 test('un ticket naît à faire et se retrouve par projet', () => {
   const { notes } = fresh();
-  const t = notes.create('/tmp/projet', { title: 'Refondre le hero', body: 'trop charge' });
+  const t = notes.create('/var/www/projet', { title: 'Refondre le hero', body: 'trop charge' });
   assert.equal(t.status, 'todo');
-  assert.equal(t.project, '/tmp/projet');
-  assert.deepEqual(notes.list('/tmp/projet').map((x) => x.id), [t.id]);
-  assert.deepEqual(notes.list('/tmp/autre'), []);
+  assert.equal(t.project, '/var/www/projet');
+  assert.deepEqual(notes.list('/var/www/projet').map((x) => x.id), [t.id]);
+  assert.deepEqual(notes.list('/var/www/autre'), []);
 });
 
 test('la barre finale ne fait pas deux projets', () => {
   const { notes } = fresh();
-  notes.create('/tmp/projet', { title: 'A' });
+  notes.create('/var/www/projet', { title: 'A' });
   // Le chemin arrive tantôt du dossier choisi, tantôt d'un dépôt git : les deux formes
   // doivent tomber sur la même liste.
-  assert.equal(notes.list('/tmp/projet/').length, 1);
-  assert.equal(notes.key('/tmp/projet/'), '/tmp/projet');
+  assert.equal(notes.list('/var/www/projet/').length, 1);
+  assert.equal(notes.key('/var/www/projet/'), '/var/www/projet');
 });
 
 test('une conversation isolee partage le bloc-notes du depot principal', () => {
   const { notes } = fresh();
-  const t = notes.create('/tmp/projet', { title: 'A' });
+  const t = notes.create('/var/www/projet', { title: 'A' });
   const isolee = {
-    cwd: './data/worktrees/abc',
-    worktree: { repo: '/tmp/projet', branch: 'agenthub/abc' },
+    cwd: '/srv/projects/demo-app/data/worktrees/abc',
+    worktree: { repo: '/var/www/projet', branch: 'agenthub/abc' },
   };
   // Sinon une idée notée depuis une branche disparaîtrait avec elle.
-  assert.equal(notes.projectOf(isolee), '/tmp/projet');
+  assert.equal(notes.projectOf(isolee), '/var/www/projet');
   assert.deepEqual(notes.list(notes.projectOf(isolee)).map((x) => x.id), [t.id]);
-  assert.equal(notes.projectOf({ cwd: '/tmp/projet' }), '/tmp/projet');
+  assert.equal(notes.projectOf({ cwd: '/var/www/projet' }), '/var/www/projet');
   assert.equal(notes.projectOf(null), null);
 });
 
@@ -54,6 +54,13 @@ test('un ticket sans titre est refuse', () => {
   const { notes } = fresh();
   assert.throws(() => notes.create('/p', { body: 'du detail' }), /Titre manquant/);
   assert.throws(() => notes.create('', { title: 'A' }), /Projet manquant/);
+});
+
+test('un bloc-notes corrompu reste intact et bloque toute réécriture', () => {
+  const { notes } = fresh();
+  fs.writeFileSync(notes.FILE, '{cassé');
+  assert.throws(() => notes.create('/p', { title: 'Ne doit pas écraser' }), /Bloc-notes illisible/);
+  assert.equal(fs.readFileSync(notes.FILE, 'utf8'), '{cassé');
 });
 
 test('seuls les champs fournis changent', () => {
@@ -105,6 +112,28 @@ test('une image ajoutee plus tard s ajoute aux precedentes', () => {
   const t = notes.create('/p', { title: 'A', images: [{ name: 'un.png', dataUrl: PIXEL }] });
   const after = notes.update(t.id, { images: [{ name: 'deux.png', dataUrl: PIXEL }] });
   assert.deepEqual(after.images.map((i) => i.name), ['un.png', 'deux.png']);
+});
+
+test('un échec de persistance ne laisse pas la nouvelle image orpheline', () => {
+  const { notes, dir } = fresh();
+  const originalRename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === notes.FILE) throw new Error('disque indisponible');
+    return originalRename(from, to);
+  };
+  try {
+    assert.throws(
+      () => notes.create('/p', { title: 'A', images: [{ name: 'x.png', dataUrl: PIXEL }] }),
+      /disque indisponible/
+    );
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  const uploadRoot = path.join(dir, 'uploads');
+  const files = fs.existsSync(uploadRoot)
+    ? fs.readdirSync(uploadRoot, { recursive: true }).filter((name) => /\.png$/.test(name))
+    : [];
+  assert.deepEqual(files, []);
 });
 
 test('le prompt d un ticket porte son identifiant', () => {
