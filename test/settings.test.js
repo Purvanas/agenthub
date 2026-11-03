@@ -46,13 +46,13 @@ test("enregistrer n'écrit que dans data/, jamais dans config/", () => {
   const { settings, file } = fresh();
   const avant = fs.readFileSync(path.join(CONFIG_DIR, 'notify.json'), 'utf8');
 
-  settings.save('notify', { enabled: true, topic: 'agenthub-arnaud' });
+  settings.save('notify', { enabled: true, topic: 'agenthub-demo' });
 
   // C'est tout l'objet de ce module : `config/` est suivi par git, et le déploiement refuse
   // un push si la copie de travail est sale.
   assert.equal(fs.readFileSync(path.join(CONFIG_DIR, 'notify.json'), 'utf8'), avant);
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {
-    notify: { enabled: true, topic: 'agenthub-arnaud' },
+    notify: { enabled: true, topic: 'agenthub-demo' },
   });
 });
 

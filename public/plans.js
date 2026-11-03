@@ -327,10 +327,89 @@ if (typeof document !== 'undefined') {
     editing: false,
     dirty: false,
     loading: false,
+    serverContent: '',
+    draftConflict: null,
+    draftRestored: false,
+    draftWarning: '',
   };
 
   let mermaidReady = null;
   let paintSeq = 0;
+  let viewSeq = 0;
+  let draftTimer = null;
+
+  function draftWarning(reason) {
+    view.draftWarning =
+      reason === 'too-large'
+        ? 'Ce document est trop volumineux pour persister son brouillon. Il reste protégé seulement tant que cet onglet reste ouvert.'
+        : reason === 'remove'
+          ? "Le brouillon est abandonné ici, mais le navigateur n’a pas pu supprimer sa copie locale. Il pourrait être reproposé après un rechargement."
+        : 'Le brouillon ne peut pas être conservé durablement sur cet appareil. Il reste protégé seulement tant que cet onglet reste ouvert.';
+    const status = $('#doc-draft-status');
+    if (status) {
+      status.textContent = view.draftWarning;
+      status.classList.add('error-text');
+    }
+  }
+
+  const planDrafts = window.AgentHubPlanDrafts
+    ? window.AgentHubPlanDrafts.create({ onWarning: draftWarning })
+    : null;
+
+  function removeDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    let removed = true;
+    if (planDrafts && view.project && view.open) removed = planDrafts.remove(view.project, view.open.path);
+    view.draftConflict = null;
+    view.draftRestored = false;
+    const status = $('#doc-draft-status');
+    if (removed) {
+      view.draftWarning = '';
+      if (status) {
+        status.textContent = '';
+        status.classList.remove('error-text');
+      }
+    }
+    return removed;
+  }
+
+  function persistDraft(content) {
+    if (!view.project || !view.open || !view.dirty) return;
+    if (!planDrafts) {
+      draftWarning('unavailable');
+      return;
+    }
+    const result = planDrafts.save({
+      project: view.project,
+      path: view.open.path,
+      base: view.serverContent,
+      content,
+    });
+    if (result.persisted) {
+      view.draftWarning = '';
+      const status = $('#doc-draft-status');
+      if (status) {
+        status.textContent = view.draftRestored ? 'Brouillon local restauré · non enregistré dans le projet' : 'Brouillon conservé sur cet appareil';
+        status.classList.remove('error-text');
+      }
+    }
+  }
+
+  function scheduleDraft(content) {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => persistDraft(content), 300);
+  }
+
+  function flushDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    if (!view.editing || !view.open) return;
+    const editor = $('#doc-editor');
+    if (editor && view.dirty) persistDraft(editor.value);
+  }
+
+  window.addEventListener('pagehide', flushDraft);
 
   /**
    * Charge et initialise mermaid, une seule fois, **à la première ouverture du tiroir**.
@@ -448,13 +527,6 @@ if (typeof document !== 'undefined') {
     return data;
   }
 
-  function q(extra) {
-    const id = convId();
-    const params = new URLSearchParams(id ? { convId: id } : {});
-    for (const [k, v] of Object.entries(extra || {})) params.set(k, v);
-    return params.toString();
-  }
-
   // --- Rendu ----------------------------------------------------------------
 
   function setCount() {
@@ -558,16 +630,30 @@ if (typeof document !== 'undefined') {
     const meta = badges(doc)
       .map((b) => `<span class="plans-tag ${b.cls}">${esc(b.text)}</span>`)
       .join('');
+    const conflict = view.draftConflict
+      ? `<div class="doc-draft-banner conflict" role="status">
+          <div><strong>Le document a changé depuis ce brouillon local.</strong>
+          <p>La version du projet reste affichée. Reprendre le brouillon est un choix explicite : son prochain enregistrement remplacera cette version.</p></div>
+          <div class="doc-draft-actions"><button class="secondary" data-doc-draft-discard>Abandonner le brouillon</button><button class="primary" data-doc-draft-resume>Reprendre mon brouillon</button></div>
+        </div>`
+      : '';
+    const storageWarning = !view.editing && view.draftWarning
+      ? `<div class="doc-draft-banner warning" role="status">${esc(view.draftWarning)}</div>`
+      : '';
 
     if (view.editing) {
       body.innerHTML =
-        `<div class="doc-view">` +
+        storageWarning + conflict + `<div class="doc-view">` +
         `<div class="doc-head"><h2>${esc(doc.title)}</h2><div class="doc-tags">${meta}</div>` +
         `<div class="plans-row-sub">${esc(doc.path)}</div></div>` +
         `<textarea id="doc-editor" class="doc-editor" spellcheck="false"></textarea>` +
         `<div class="doc-edit-foot">` +
         `<span id="doc-error" class="error-text"></span>` +
         `<span id="doc-hint" class="plans-row-sub">Ctrl+S enregistre</span>` +
+        `<span id="doc-draft-status" class="plans-row-sub${view.draftWarning ? ' error-text' : ''}">${esc(
+          view.draftWarning || (view.draftRestored ? 'Brouillon local restauré · non enregistré dans le projet' : '')
+        )}</span>` +
+        `${view.draftRestored ? '<button data-doc-draft-discard class="secondary">Abandonner le brouillon</button>' : ''}` +
         `<button id="btn-doc-cancel" class="secondary">Annuler</button>` +
         `<button id="btn-doc-save" class="primary">Enregistrer</button>` +
         `</div>` +
@@ -578,7 +664,9 @@ if (typeof document !== 'undefined') {
       const editor = $('#doc-editor');
       editor.value = doc.content;
       editor.addEventListener('input', () => {
-        view.dirty = true;
+        view.dirty = editor.value !== view.serverContent;
+        if (view.dirty) scheduleDraft(editor.value);
+        else removeDraft();
         schedulePreview();
       });
       editor.addEventListener('keydown', (e) => {
@@ -592,7 +680,7 @@ if (typeof document !== 'undefined') {
     }
 
     body.innerHTML =
-      `<div class="doc-view">` +
+      storageWarning + conflict + `<div class="doc-view">` +
       `<div class="doc-head"><h2>${esc(doc.title)}</h2><div class="doc-tags">${meta}</div>` +
       `<div class="plans-row-sub">${esc(doc.path)}${doc.origin ? ` · vient de ${esc(doc.origin)}` : ''}</div>` +
       // Le même geste depuis le document ouvert : c'est en le lisant qu'on s'aperçoit qu'il
@@ -644,7 +732,7 @@ if (typeof document !== 'undefined') {
     $('#plans-tabs').classList.toggle('hidden', Boolean(view.open));
     $('#btn-plans-back').classList.toggle('hidden', !view.open);
     $('#btn-plans-new').classList.toggle('hidden', Boolean(view.open));
-    $('#btn-plans-edit').classList.toggle('hidden', !view.open || view.editing);
+    $('#btn-plans-edit').classList.toggle('hidden', !view.open || view.editing || Boolean(view.draftConflict));
 
     for (const tab of document.querySelectorAll('[data-plans-tab]')) {
       tab.classList.toggle('active', tab.dataset.plansTab === view.tab);
@@ -662,21 +750,31 @@ if (typeof document !== 'undefined') {
   // --- Chargements ----------------------------------------------------------
 
   async function loadList() {
+    // Certaines entrées (réouverture du tiroir, changement de panneau) peuvent revenir à la
+    // liste sans passer par le bouton Retour. Persister avant de remplacer le DOM ferme cette
+    // dernière fenêtre de perte entre une frappe et le délai d'écriture du brouillon.
+    flushDraft();
+    const seq = ++viewSeq;
+    const id = convId();
+    if (!id) return;
     view.loading = true;
     view.open = null;
     view.editing = false;
     render();
     try {
       if (view.tab === 'schemas') {
-        const data = await call(`/api/plans/diagrams?${q()}`);
+        const data = await call(`/api/plans/diagrams?${new URLSearchParams({ convId: id })}`);
+        if (seq !== viewSeq || convId() !== id) return;
         view.project = data.project;
         view.diagrams = data.diagrams || [];
       } else {
-        const data = await call(`/api/plans?${q()}`);
+        const data = await call(`/api/plans?${new URLSearchParams({ convId: id })}`);
+        if (seq !== viewSeq || convId() !== id) return;
         view.project = data.project;
         view.sections = data.sections || [];
       }
     } catch (err) {
+      if (seq !== viewSeq || convId() !== id) return;
       view.loading = false;
       $('#plans-body').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
       setCount();
@@ -687,13 +785,39 @@ if (typeof document !== 'undefined') {
   }
 
   async function openDoc(path, blockIndex) {
+    const seq = ++viewSeq;
+    const id = convId();
+    if (!id) return;
     view.loading = true;
     render();
     try {
-      const data = await call(`/api/plans/doc?${q({ path })}`);
+      const data = await call(
+        `/api/plans/doc?${new URLSearchParams({ convId: id, path })}`
+      );
+      if (seq !== viewSeq || convId() !== id) return;
+      clearTimeout(draftTimer);
+      draftTimer = null;
       view.open = data.doc;
       view.editing = false;
       view.dirty = false;
+      view.serverContent = data.doc.content;
+      view.draftConflict = null;
+      view.draftRestored = false;
+      view.draftWarning = '';
+      const local = planDrafts ? planDrafts.load(view.project, data.doc.path) : null;
+      if (local && local.persisted === false) draftWarning('unavailable');
+      if (local && local.content === data.doc.content) {
+        // Un brouillon identique à la version serveur n'a plus rien à protéger.
+        planDrafts.remove(view.project, data.doc.path);
+      } else if (local && planDrafts.relation(local, data.doc.content) === 'same-base') {
+        view.open = { ...data.doc, content: local.content };
+        view.editing = true;
+        view.dirty = true;
+        view.draftRestored = true;
+      } else if (local) {
+        // On garde les deux versions séparées jusqu'au choix explicite sous le document.
+        view.draftConflict = local;
+      }
       view.loading = false;
       render();
       // Ouvrir une carte de schéma doit amener sur ce schéma, pas en haut d'un plan de dix pages.
@@ -703,6 +827,7 @@ if (typeof document !== 'undefined') {
         if (target) target.scrollIntoView({ block: 'center' });
       }
     } catch (err) {
+      if (seq !== viewSeq || convId() !== id) return;
       view.loading = false;
       view.open = null;
       render();
@@ -714,24 +839,77 @@ if (typeof document !== 'undefined') {
     const editor = $('#doc-editor');
     if (!editor || !view.open) return;
     const btn = $('#btn-doc-save');
+    if (!btn || btn.disabled) return;
+    const seq = viewSeq;
+    const id = convId();
+    if (!id) return;
+    const content = editor.value;
+    // Le clic Enregistrer ne rend pas le réseau plus fiable : le brouillon local reste la
+    // ceinture de sécurité jusqu'à la confirmation de l'API.
+    view.dirty = content !== view.serverContent;
+    if (view.dirty) persistDraft(content);
     btn.disabled = true;
     try {
+      // Le fichier peut avoir été modifié par un agent ou un autre onglet pendant l'édition.
+      // Une relecture légère avant l'écriture garde les deux versions séparées au lieu de
+      // remplacer silencieusement celle du projet.
+      const latest = await call(
+        `/api/plans/doc?${new URLSearchParams({ convId: id, path: view.open.path })}`
+      );
+      if (seq !== viewSeq || convId() !== id) return;
+      if (latest.doc.content !== view.serverContent) {
+        view.dirty = true;
+        persistDraft(editor.value);
+        const local = planDrafts ? planDrafts.load(view.project, view.open.path) : null;
+        view.open = latest.doc;
+        view.serverContent = latest.doc.content;
+        view.editing = false;
+        view.dirty = false;
+        view.draftRestored = false;
+        view.draftConflict = local;
+        render();
+        window.toastError('Le document a changé ailleurs. Les deux versions sont conservées : choisis celle à reprendre.');
+        return;
+      }
       const data = await call('/api/plans/doc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          convId: convId(),
+          convId: id,
           project: view.project,
           path: view.open.path,
-          content: editor.value,
+          content,
+          // Le serveur compare cette version atomiquement au moment de l'écriture : une
+          // modification arrivée après le GET de préflight produit un 409 et laisse le
+          // brouillon local intact dans le catch ci-dessous.
+          expectedVersion: latest.doc.version,
         }),
       });
-      view.open = { ...data.doc, content: editor.value };
+      if (seq !== viewSeq || convId() !== id) return;
+      // Le textarea reste éditable pendant le réseau. Une frappe plus récente ne doit pas
+      // être marquée enregistrée ni disparaître au retour de la réponse précédente.
+      if (editor.value !== content) {
+        view.serverContent = data.doc.content;
+        view.open = { ...data.doc, content: editor.value };
+        view.dirty = true;
+        view.draftRestored = false;
+        persistDraft(editor.value);
+        btn.disabled = false;
+        const hint = $('#doc-hint');
+        if (hint) hint.textContent = 'Version précédente enregistrée · nouvelles modifications en attente';
+        return;
+      }
+      view.open = data.doc;
+      view.serverContent = data.doc.content;
       view.editing = false;
       view.dirty = false;
+      removeDraft();
       render();
       window.toast('Enregistré');
     } catch (err) {
+      if (seq !== viewSeq || convId() !== id) return;
+      view.dirty = editor.value !== view.serverContent;
+      if (view.dirty) persistDraft(editor.value);
       btn.disabled = false;
       const box = $('#doc-error');
       if (box) box.textContent = err.message;
@@ -827,28 +1005,37 @@ if (typeof document !== 'undefined') {
     const title = titleInput.value.trim();
     if (!title) return window.toastError('Titre manquant');
     const diagram = diagramSelect.value;
+    const seq = viewSeq;
+    const id = convId();
+    const project = view.project;
+    if (!id) return;
 
     try {
       const data = await call('/api/plans', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          convId: convId(),
-          project: view.project,
+          convId: id,
+          project,
           kind,
           title,
           diagram,
         }),
       });
+      if (seq !== viewSeq || convId() !== id) return;
       window.toast(`Créé : ${data.doc.path}`);
       // On enchaîne dans l'éditeur : créer un document pour ensuite le chercher dans une liste
       // serait un clic de trop sur le geste le plus fréquent.
       view.open = data.doc;
       view.editing = true;
       view.dirty = false;
+      view.serverContent = data.doc.content;
+      view.draftConflict = null;
+      view.draftRestored = false;
+      view.draftWarning = '';
       render();
     } catch (err) {
-      window.toastError(err.message);
+      if (seq === viewSeq && convId() === id) window.toastError(err.message);
     }
   }
 
@@ -896,40 +1083,58 @@ if (typeof document !== 'undefined') {
   });
 
   $('#btn-plans-back').addEventListener('click', () => {
-    if (view.editing && view.dirty) {
-      window
-        .askConfirm({
-          title: 'Abandonner les modifications ?',
-          body: "Ce document a été modifié sans être enregistré.",
-          ok: 'Abandonner',
-          danger: true,
-        })
-        .then((ok) => {
-          if (!ok) return;
-          view.dirty = false;
-          loadList();
-        });
-      return;
-    }
+    // Revenir à la liste n'écrit rien dans le projet et ne demande plus une confirmation à
+    // chaque fois : le brouillon local est le filet de sécurité explicite.
+    flushDraft();
     loadList();
   });
 
   $('#btn-plans-edit').addEventListener('click', () => {
     if (!view.open) return;
     if (view.open.tooBig) return window.toastError('Document trop volumineux pour être édité ici');
+    view.serverContent = view.open.content;
+    view.draftConflict = null;
+    view.draftRestored = false;
+    view.draftWarning = '';
     view.editing = true;
     render();
   });
 
   $('#btn-plans-new').addEventListener('click', createDoc);
   $('#btn-plans-refresh').addEventListener('click', () => {
-    if (view.open) return openDoc(view.open.path);
+    if (view.open) {
+      flushDraft();
+      return openDoc(view.open.path);
+    }
     loadList();
   });
 
   $('#plans-body').addEventListener('click', (e) => {
     if (e.target.closest('#btn-doc-save')) return saveDoc();
+    if (e.target.closest('[data-doc-draft-resume]') && view.draftConflict) {
+      const local = view.draftConflict;
+      view.draftConflict = null;
+      view.draftRestored = true;
+      view.open = { ...view.open, content: local.content };
+      view.editing = true;
+      view.dirty = local.content !== view.serverContent;
+      // Ce clic reconnaît explicitement la version serveur actuelle comme nouvelle base.
+      if (view.dirty) persistDraft(local.content);
+      else removeDraft();
+      render();
+      return;
+    }
+    if (e.target.closest('[data-doc-draft-discard]')) {
+      removeDraft();
+      view.open = { ...view.open, content: view.serverContent };
+      view.editing = false;
+      view.dirty = false;
+      render();
+      return;
+    }
     if (e.target.closest('#btn-doc-cancel')) {
+      removeDraft();
+      view.open = { ...view.open, content: view.serverContent };
       view.editing = false;
       view.dirty = false;
       render();
@@ -945,9 +1150,15 @@ if (typeof document !== 'undefined') {
       loadList();
     },
     close() {
+      flushDraft();
+      viewSeq += 1;
       view.open = null;
       view.editing = false;
       view.dirty = false;
+      view.serverContent = '';
+      view.draftConflict = null;
+      view.draftRestored = false;
+      view.draftWarning = '';
     },
     /** Un autre onglet a écrit dans ce projet : la liste affichée n'est plus à jour. */
     onServerChange(project) {

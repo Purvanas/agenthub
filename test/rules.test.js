@@ -17,7 +17,7 @@ process.env.AGENTHUB_DATA = DATA;
 
 const rules = require('../lib/rules');
 
-const PROJECT = '.';
+const PROJECT = '/srv/projects/demo-app';
 const PUSH = {
   name: 'git push',
   when: 'avant tout push, quelle que soit la branche',
@@ -44,7 +44,7 @@ test('la casse, les accents et les espaces en trop ne font pas rater la regle', 
 
 test('une regle d un autre projet ne repond pas', () => {
   rules.create(PROJECT, PUSH);
-  assert.equal(rules.find('/tmp/site', 'git push'), null);
+  assert.equal(rules.find('/var/www/site', 'git push'), null);
 });
 
 // Désactiver doit avoir exactement l'effet de ne pas avoir écrit la règle, sinon on ne sait
@@ -77,7 +77,7 @@ test('deux regles du meme nom sont refusees, casse comprise', () => {
   rules.create(PROJECT, PUSH);
   assert.throws(() => rules.create(PROJECT, { ...PUSH, name: 'GIT PUSH' }), /existe déjà/);
   // Un autre projet peut avoir la sienne.
-  assert.ok(rules.create('/tmp/site', PUSH));
+  assert.ok(rules.create('/var/www/site', PUSH));
 });
 
 test('renommer une regle vers un nom deja pris est refuse', () => {
@@ -95,9 +95,9 @@ test('supprimer une regle, et les regles d un projet entier', () => {
 
   rules.create(PROJECT, PUSH);
   rules.create(PROJECT, { name: 'autre', body: 'x' });
-  rules.create('/tmp/site', PUSH);
+  rules.create('/var/www/site', PUSH);
   assert.equal(rules.forgetProject(PROJECT), 2);
-  assert.equal(rules.list('/tmp/site').length, 1);
+  assert.equal(rules.list('/var/www/site').length, 1);
 });
 
 // --- Ce que l'agent voit ---------------------------------------------------

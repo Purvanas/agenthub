@@ -51,153 +51,35 @@ const state = {
   // consulte, et justement au moment le plus intéressant — quand un déclencheur part.
   openRuns: new Set(),
   deep: null, // resultats de la recherche dans le contenu, cote serveur
-  galProjects: [],
-  galImages: [],
   accounts: null, // null tant que /api/accounts n'a pas répondu
-  // Réglages modifiables, tels que le serveur les rend : valeurs effectives par section,
-  // plus la liste de ce qui s'écarte du dépôt. null tant que la page n'a pas été ouverte.
-  settings: null,
 };
 
 // --- Utilitaires ----------------------------------------------------------
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+const messageRenderer = window.AgentHubMessageRenderer.create({ ideas, locale: 'fr-FR' });
+const { fileExtOf, isTextName, attachmentIsText, textBadge } = messageRenderer.attachments;
+
+// Fonctions (et non bindings `const`) : plans.js expose historiquement les mêmes helpers
+// dans le scope des scripts classiques. Les déclarations de fonction partagent ce contrat
+// navigateur sans provoquer la collision lexicale qui empêcherait app.js de démarrer.
+function esc(value) {
+  return messageRenderer.esc(value);
 }
 
-/**
- * Comme `esc`, plus les guillemets. À utiliser dès qu'un texte d'agent finit dans un
- * attribut : un titre d'idée contient un guillemet une fois sur dix, et sans ça il ferme
- * l'attribut et laisse le reste de la phrase devenir du balisage.
- */
-function escAttr(s) {
-  return esc(s).replace(/"/g, '&quot;');
+function escAttr(value) {
+  return messageRenderer.escAttr(value);
 }
 
-/**
- * Identifiant utilisable dans un sélecteur CSS. Sert à retrouver la ligne qu'une
- * suppression fait disparaître le temps qu'on puisse l'annuler.
- */
-function cssEscape(s) {
-  const raw = String(s == null ? '' : s);
+// Les autres vues conservent leur appel historique. Le rendu pur, lui, reçoit toujours le
+// contexte qui résout les images relatives.
+function md(text, context = { conversationId: state.currentId }) {
+  return messageRenderer.md(text, context);
+}
+
+/** Identifiant sûr dans un sélecteur CSS dynamique. */
+function cssEscape(value) {
+  const raw = String(value == null ? '' : value);
   return window.CSS && CSS.escape ? CSS.escape(raw) : raw.replace(/["\\]/g, '\\$&');
-}
-
-/**
- * Mise en forme dans une ligne : code, gras, italique. Sur du texte **déjà échappé**.
- *
- * À part parce que deux rendus s'en servent — le fil, et les cartes d'idée qui en sont
- * extraites avant qu'il ne passe. Sans ça, une description d'idée affichait ses backticks.
- */
-function inline(escaped) {
-  return escaped
-    .replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`)
-    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-}
-
-// Rendu markdown volontairement minimal : blocs de code, code inline, gras,
-// italique et listes. Suffisant pour de la sortie d'agent, zéro dépendance.
-function md(text) {
-  const blocks = [];
-  let src = String(text || '').replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push(`<pre><code data-lang="${esc(lang)}">${esc(code.replace(/\n$/, ''))}</code></pre>`);
-    return `\u0000${blocks.length - 1}\u0000`;
-  });
-
-  // Images markdown produites par un agent : ![alt](chemin). Le chemin est
-  // resolu cote serveur (relatif au dossier de travail, au dossier de session du
-  // provider, ou absolu) : le navigateur le resoudrait contre l'origine de l'app.
-  src = src.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, target) => {
-    const url = /^https?:\/\//i.test(target)
-      ? target
-      : `/api/conversations/${state.currentId}/image?path=${encodeURIComponent(target)}`;
-    blocks.push(
-      `<img class="msg-img" src="${esc(url)}" alt="${esc(alt)}" title="${esc(target)}" ` +
-        `data-image="${esc(url)}" data-name="${esc(alt || target)}" data-path="${esc(target)}" loading="lazy">`
-    );
-    return `\u0000${blocks.length - 1}\u0000`;
-  });
-
-  // Idées proposées par l'agent : `[idée] Titre — description`. Extraites AVANT
-  // l'échappement et la mise en forme, pour que le titre porté par la carte soit le texte
-  // brut — c'est lui qui partira dans la todo, et du `<strong>` dans un titre de ticket
-  // serait un dégât silencieux.
-  src = src.replace(new RegExp(ideas.IDEA_LINE.source, 'gim'), (line) => {
-    const idea = ideas.match(line);
-    if (!idea) return line;
-    blocks.push(
-      `<div class="idea">` +
-        `<svg class="icon"><use href="#i-note"/></svg>` +
-        // Affichage mis en forme, attributs bruts : c'est le titre brut qui part dans la
-        // todo, et du `<code>` dans un titre de ticket serait un dégât silencieux.
-        `<div class="idea-text"><strong>${inline(esc(idea.title))}</strong>` +
-        (idea.body ? `<span>${inline(esc(idea.body))}</span>` : '') +
-        `</div>` +
-        // « Faire » avant « Ajouter à la todo », et c'est délibéré : la todo est ce qu'on
-        // choisit quand on ne veut pas maintenant. Le cas fréquent est l'inverse — on lit une
-        // proposition et on la veut tout de suite, sans la retaper.
-        `<button class="idea-do" data-idea-title="${escAttr(idea.title)}" ` +
-        `data-idea-body="${escAttr(idea.body)}">Faire</button>` +
-        `<button class="idea-add" data-idea-title="${escAttr(idea.title)}" ` +
-        `data-idea-body="${escAttr(idea.body)}">Ajouter à la todo</button>` +
-        `</div>`
-    );
-    // Isolée par des lignes vides : la carte est un bloc, et laissée au milieu d'une liste
-    // elle se retrouverait dans un `<li>` ou un `<p>` dont elle sortirait de travers.
-    return `\n\n\u0000${blocks.length - 1}\u0000\n\n`;
-  });
-
-  src = inline(esc(src));
-
-  // Un bloc, c'est ce qui est séparé par une ligne vide — sauf qu'un agent colle
-  // volontiers une liste sous un titre sans sauter de ligne. On isole donc les titres et
-  // on retraite ce qui les entoure, faute de quoi cette liste serait perdue.
-  const renderBlock = (para) => {
-    const lines = para.split('\n');
-
-    const at = lines.findIndex((l) => /^#{1,4}\s+\S/.test(l));
-    if (at !== -1) {
-      const [, hashes, title] = lines[at].match(/^(#{1,4})\s+(.+)$/);
-      // h1 reste à l'application : un titre d'agent commence à h2.
-      const level = hashes.length + 1;
-      return (
-        renderBlock(lines.slice(0, at).join('\n')) +
-        `<h${level} class="md-h">${title}</h${level}>` +
-        renderBlock(lines.slice(at + 1).join('\n'))
-      );
-    }
-
-    if (!para.trim()) return '';
-
-    // Un bloc qui n'est que des marqueurs — carte d'idée, bloc de code, image — sort tel
-    // quel. Enveloppé dans un `<p>`, un `<div>` en ressortirait de travers : le navigateur
-    // ferme le paragraphe avant lui et laisse une balise orpheline derrière.
-    if (lines.every((l) => !l.trim() || /^\u0000\d+\u0000$/.test(l.trim()))) {
-      return lines.map((l) => l.trim()).join('');
-    }
-
-    if (lines.every((l) => /^\s*[-*+]\s+/.test(l))) {
-      return `<ul class="ul">${lines
-        .map((l) => `<li>${l.replace(/^\s*[-*+]\s+/, '')}</li>`)
-        .join('')}</ul>`;
-    }
-    // Listes numérotées, bornées à trois chiffres pour ne pas transformer « 2026. » en
-    // début de liste.
-    if (lines.every((l) => /^\s*\d{1,3}[.)]\s+/.test(l))) {
-      return `<ol class="ul">${lines
-        .map((l) => `<li>${l.replace(/^\s*\d{1,3}[.)]\s+/, '')}</li>`)
-        .join('')}</ol>`;
-    }
-    return `<p>${lines.join('<br>')}</p>`;
-  };
-
-  const html = src.split(/\n{2,}/).map(renderBlock).join('');
-
-  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[Number(i)]);
 }
 
 const PROVIDER_ICONS = { claude: 'ico-claude', codex: 'ico-codex', grok: 'ico-grok' };
@@ -238,11 +120,12 @@ function silenceLabel(entry) {
   return `silencieux depuis ${Math.floor(minutes / 60)} h${rest ? ` ${String(rest).padStart(2, '0')}` : ''}`;
 }
 
-async function api(method, url, body) {
+async function api(method, url, body, options = {}) {
   const res = await fetch(url, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal: options.signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -524,6 +407,7 @@ function renderList() {
   const items = state.convs.filter(
     (c) =>
       !state.hiding.has(c.id) &&
+      !c.archived &&
       !hiddenProviders.has(c.provider) &&
       (!term || c.title.toLowerCase().includes(term) || c.cwd.toLowerCase().includes(term))
   );
@@ -1118,11 +1002,15 @@ function resetRuleForm() {
   $('#rule-always').checked = false;
   $('#rules-error').textContent = '';
   $('#btn-rule-save').textContent = 'Ajouter la règle';
+  $('#btn-rule-save').disabled = false;
   $('#btn-rule-cancel').classList.add('hidden');
 }
 
 async function loadRules() {
-  const data = await api('GET', `/api/rules?project=${encodeURIComponent(rulesProject)}`);
+  const project = rulesProject;
+  if (!project) return;
+  const data = await api('GET', `/api/rules?project=${encodeURIComponent(project)}`);
+  if (rulesProject !== project) return;
   state.rules = data.rules || [];
   renderRules(state.rules);
 }
@@ -1138,7 +1026,7 @@ async function openRules(folderId) {
   try {
     await loadRules();
   } catch (err) {
-    $('#rules-error').textContent = err.message;
+    if (rulesProject === folder.cwd) $('#rules-error').textContent = err.message;
   }
 }
 
@@ -1155,6 +1043,8 @@ $('#rules-modal').addEventListener('click', (e) => {
 $('#btn-rule-cancel').addEventListener('click', resetRuleForm);
 
 $('#btn-rule-save').addEventListener('click', async () => {
+  const project = rulesProject;
+  const ruleId = editingRuleId;
   const err = $('#rules-error');
   err.textContent = '';
   const body = {
@@ -1170,18 +1060,20 @@ $('#btn-rule-save').addEventListener('click', async () => {
   $('#btn-rule-save').disabled = true;
   try {
     // Modifier passe par `PATCH` sur l'identifiant : le nom peut justement être ce qui change.
-    if (editingRuleId) await api('PATCH', `/api/rules/${editingRuleId}`, body);
+    if (ruleId) await api('PATCH', `/api/rules/${ruleId}`, body);
     else await api('POST', '/api/rules', body);
+    if (rulesProject !== project) return;
     resetRuleForm();
     await loadRules();
   } catch (e2) {
-    err.textContent = e2.message;
+    if (rulesProject === project) err.textContent = e2.message;
   } finally {
-    $('#btn-rule-save').disabled = false;
+    if (rulesProject === project) $('#btn-rule-save').disabled = false;
   }
 });
 
 $('#rules-list').addEventListener('click', async (e) => {
+  const project = rulesProject;
   const edit = e.target.closest('[data-rule-edit]');
   const toggle = e.target.closest('[data-rule-toggle]');
   const del = e.target.closest('[data-rule-del]');
@@ -1218,9 +1110,9 @@ $('#rules-list').addEventListener('click', async (e) => {
       // cible, et « Enregistrer » ressusciterait une règle supprimée.
       if (editingRuleId === rule.id) resetRuleForm();
     }
-    await loadRules();
+    if (rulesProject === project) await loadRules();
   } catch (err) {
-    $('#rules-error').textContent = err.message;
+    if (rulesProject === project) $('#rules-error').textContent = err.message;
   }
 });
 
@@ -1265,9 +1157,10 @@ async function openSecrets(folderId) {
   $('#secrets-list').innerHTML = '<div class="empty">Chargement…</div>';
   $('#secrets-modal').classList.remove('hidden');
   try {
-    renderSecrets((await api('GET', `/api/folders/${folderId}/secrets`)).secrets);
+    const data = await api('GET', `/api/folders/${folderId}/secrets`);
+    if (secretsFolder === folderId) renderSecrets(data.secrets);
   } catch (err) {
-    $('#secrets-error').textContent = err.message;
+    if (secretsFolder === folderId) $('#secrets-error').textContent = err.message;
   }
 }
 
@@ -1286,20 +1179,22 @@ $('#secrets-modal').addEventListener('click', (e) => {
 });
 
 $('#btn-secret-add').addEventListener('click', async () => {
+  const folder = secretsFolder;
   const name = $('#secret-name').value.trim();
   const value = $('#secret-value').value;
   const err = $('#secrets-error');
   err.textContent = '';
-  if (!name || !value) return void (err.textContent = 'Il faut un nom et une valeur.');
+  if (!folder || !name || !value) return void (err.textContent = 'Il faut un nom et une valeur.');
   try {
-    const data = await api('PUT', `/api/folders/${secretsFolder}/secrets/${encodeURIComponent(name)}`, {
+    const data = await api('PUT', `/api/folders/${folder}/secrets/${encodeURIComponent(name)}`, {
       value,
     });
+    if (secretsFolder !== folder) return;
     renderSecrets(data.secrets);
     $('#secret-name').value = '';
     $('#secret-value').value = '';
   } catch (e2) {
-    err.textContent = e2.message;
+    if (secretsFolder === folder) err.textContent = e2.message;
   }
 });
 
@@ -1330,18 +1225,20 @@ function renderImportReport(r) {
 }
 
 $('#btn-secret-import').addEventListener('click', async () => {
+  const folder = secretsFolder;
   const text = $('#secret-env').value;
   const err = $('#secrets-error');
   err.textContent = '';
-  if (!text.trim()) return void (err.textContent = 'Colle le contenu du fichier .env.');
+  if (!folder || !text.trim()) return void (err.textContent = 'Colle le contenu du fichier .env.');
   try {
-    const data = await api('POST', `/api/folders/${secretsFolder}/secrets/import`, { text });
+    const data = await api('POST', `/api/folders/${folder}/secrets/import`, { text });
+    if (secretsFolder !== folder) return;
     renderSecrets(data.secrets);
     renderImportReport(data);
     // Le contenu collé ne reste pas dans le champ : c'est le fichier de secrets en clair.
     $('#secret-env').value = '';
   } catch (e2) {
-    err.textContent = e2.message;
+    if (secretsFolder === folder) err.textContent = e2.message;
   }
 });
 
@@ -1363,7 +1260,7 @@ $('#secrets-list').addEventListener('click', async (e) => {
         // encore celui d'où la clé partait.
         if (secretsFolder === folder) renderSecrets(data.secrets);
       } catch (err) {
-        $('#secrets-error').textContent = err.message;
+        if (secretsFolder === folder) $('#secrets-error').textContent = err.message;
         throw err;
       }
     },
@@ -1488,8 +1385,10 @@ function deleteConvWithUndo(id) {
   undoToast({
     message: `« ${conv ? conv.title : 'Conversation'} » supprimée`,
     run: async () => {
+      let result;
       try {
-        await api('DELETE', `/api/conversations/${id}`);
+        result = await api('DELETE', `/api/conversations/${id}`);
+        discardComposerDraft(id);
       } finally {
         // Le filtre doit tomber dans tous les cas : sur succès la conversation n'existe
         // plus, sur échec elle doit redevenir visible plutôt que de disparaître pour de
@@ -1497,6 +1396,29 @@ function deleteConvWithUndo(id) {
         state.hiding.delete(id);
       }
       await refreshList();
+      return result;
+    },
+    completed: (result, notice) => {
+      const worktree = result && result.worktree;
+      if (!worktree || worktree.removed !== false) return;
+      const why = {
+        uncommitted: 'il contient des modifications non commitées',
+        shared: 'une autre conversation l’utilise encore',
+        'unknown-state': 'son état n’a pas pu être vérifié sans risque',
+        'invalid-path': 'son chemin n’a pas pu être validé sans risque',
+        'removal-refused': 'sa suppression sûre a été refusée',
+      }[worktree.reason] || 'il ne pouvait pas être supprimé sans risque';
+      const message = `Conversation supprimée · dossier de travail conservé car ${why}${
+        worktree.path ? ` : ${worktree.path}` : ''
+      }`;
+      // Si le toast d’annulation commence déjà à disparaître, un seul nouvel avis prend le
+      // relais. Sinon on recycle le toast existant plutôt que d’en empiler deux.
+      if (notice && notice.isConnected && !notice.dataset.leaving) {
+        const text = notice.querySelector('.toast-text');
+        if (text) text.textContent = message;
+      } else {
+        toast(message, { ms: 9000 });
+      }
     },
     undone: () => {
       state.hiding.delete(id);
@@ -1602,156 +1524,8 @@ function focusItem(itemId) {
 
 // --- Rendu des messages ---------------------------------------------------
 
-function summarizeInput(item) {
-  const input = item.input || {};
-  if (typeof input === 'string') return input;
-  const first =
-    input.command ||
-    input.file_path ||
-    input.path ||
-    input.pattern ||
-    input.query ||
-    input.prompt ||
-    input.files ||
-    input.url ||
-    input.description;
-  return first ? String(first) : Object.keys(input).length ? JSON.stringify(input) : '';
-}
-
-// Un item produit par un sous-agent est décalé et signalé au survol. C'est le seul
-// indice disponible : le flux ne nomme pas le sous-agent, il ne donne que l'identifiant
-// de l'appel d'outil qui l'a lancé.
-/**
- * Message d'utilisateur dont la première ligne appelle une skill : la commande ressort en
- * accent, comme dans un terminal. Échappé d'abord — la mise en forme ne doit pas ouvrir la
- * porte à du HTML venu du texte.
- */
-function skillCall(text) {
-  const safe = esc(text);
-  return safe.replace(/^\/([a-z0-9][a-z0-9:-]*)/i, '<span class="skill-call">/$1</span>');
-}
-
-const nestedClass = (item) => (item.nested ? ' nested' : '');
-const nestedTitle = (item) => (item.nested ? ' title="Produit par un sous-agent"' : '');
-
 function renderItem(item) {
-  switch (item.kind) {
-    case 'user': {
-      const images = (item.images || []).map(renderStoredAttachment).join('');
-      // Le bouton n'apparaît que si l'instantané a réellement été pris.
-      // Markup sur une seule ligne : le conteneur est en white-space: pre-wrap, donc
-      // toute indentation à l'intérieur du bouton se verrait à l'écran.
-      const cp = item.checkpoint;
-      const rewind =
-        cp && cp.sha
-          ? `<button class="msg-rewind" data-rewind="${esc(cp.sha)}" title="Restaurer les fichiers à leur état d'avant ce message"><svg class="icon"><use href="#i-rewind"/></svg>Fichiers</button>`
-          : '';
-      // La demande de note de passation est longue et toujours la même : on la replie
-      // pour qu'elle n'écrase pas le fil, sans rien cacher de ce qui a été envoyé.
-      if (item.handoff === 'request') {
-        return `<details class="msg msg-user msg-handoff" data-item="${item.id}"><summary><svg class="icon"><use href="#i-relay"/></svg>Note de passation demandée pour un relais</summary><div class="handoff-body">${esc(item.text)}</div></details>`;
-      }
-      // Mode objectif : trois messages que l'application a rédigés — l'ouverture, la
-      // vérification, la relance. Ils ont réellement été envoyés et ont coûté un turn, donc on
-      // les replie sans les cacher ; ce qui compte tient dans leur résumé.
-      if (item.goal) {
-        const head = {
-          start: `Objectif ouvert${item.goalText ? ` — ${esc(item.goalText)}` : ''}`,
-          check: 'Point sur l’objectif demandé',
-          continue: 'Relance : ce qui reste à faire',
-        }[item.goal];
-        return `<details class="msg msg-user msg-handoff msg-goal" data-item="${item.id}"><summary><svg class="icon"><use href="#i-target"/></svg>${
-          head || 'Mode objectif'
-        }</summary><div class="handoff-body">${esc(item.text)}</div></details>`;
-      }
-      // Même traitement que la note de passation : la consigne est longue et toujours la
-      // même, mais elle a bien été envoyée et a coûté un turn — on la replie, on ne la cache pas.
-      if (item.report === 'request') {
-        return `<details class="msg msg-user msg-handoff" data-item="${item.id}"><summary><svg class="icon"><use href="#i-clock"/></svg>Rapport de fin demandé</summary><div class="handoff-body">${esc(item.text)}</div></details>`;
-      }
-      return `<div class="msg msg-user" data-item="${item.id}">${rewind}${skillCall(item.text)}${
-        images ? `<div class="msg-images">${images}</div>` : ''
-      }</div>`;
-    }
-
-    case 'text':
-      if (item.handoff === 'note') {
-        return `<div class="msg msg-text msg-note" data-item="${item.id}">
-          <div class="note-badge"><svg class="icon"><use href="#i-relay"/></svg>Note de passation${
-            item.handoffFile ? ` · ${esc(item.handoffFile)}` : ''
-          }</div>${md(item.text)}</div>`;
-      }
-      return `<div class="msg msg-text${nestedClass(item)}" data-item="${item.id}"${nestedTitle(
-        item
-      )}>${md(item.text)}</div>`;
-
-    case 'thinking':
-      return `<details class="think${nestedClass(item)}" data-item="${item.id}"${nestedTitle(
-        item
-      )}><summary>Réflexion</summary><div class="tool-body">${esc(item.text)}</div></details>`;
-
-    case 'tool': {
-      const body = [];
-      if (item.input && Object.keys(item.input).length) {
-        body.push(`<pre>${esc(
-          typeof item.input === 'string' ? item.input : JSON.stringify(item.input, null, 2)
-        )}</pre>`);
-      }
-      if (item.result != null && item.result !== '') {
-        const text = String(item.result);
-        const clipped = text.length > 6000 ? `${text.slice(0, 6000)}\n… (${text.length} caractères)` : text;
-        body.push(`<pre>${esc(clipped)}</pre>`);
-      }
-      // Images renvoyées par l'outil : les captures d'un navigateur. Le bloc s'ouvre de
-      // lui-même quand il y en a — une capture repliée derrière un chevron ne sert à rien,
-      // c'est précisément ce qu'on voulait voir.
-      const shots = (item.images || []).length
-        ? `<div class="tool-shots">${item.images
-            .map(
-              (img) =>
-                `<button data-image="${esc(img.url)}" data-name="${esc(img.name || 'capture')}" title="Agrandir">
-                  <img src="${esc(img.url)}" alt="${esc(img.name || 'capture')}" decoding="async">
-                </button>`
-            )
-            .join('')}</div>`
-        : '';
-      if (shots) body.push(shots);
-
-      return `<details class="tool${item.isError ? ' err' : ''}${nestedClass(item)}${
-        shots ? ' has-shots' : ''
-      }" data-item="${item.id}"${nestedTitle(item)}${shots ? ' open' : ''}>
-        <summary><span class="tool-name">${esc(item.tool)}</span><span class="tool-arg">${esc(
-        summarizeInput(item)
-      )}</span></summary>
-        <div class="tool-body">${body.join('')}</div>
-      </details>`;
-    }
-
-    case 'result':
-      return item.isError
-        ? `<div class="msg-err" data-item="${item.id}">${esc(item.text || 'Erreur')}</div>`
-        : '';
-
-    case 'notice': {
-      // Un avis peut porter un instantané : c'est le cas après une restauration,
-      // dont on peut alors revenir d'un clic.
-      const undo =
-        item.checkpoint && item.checkpoint.sha
-          ? ` <button class="msg-undo" data-rewind="${esc(item.checkpoint.sha)}"><svg class="icon"><use href="#i-rewind"/></svg>${esc(item.checkpointLabel || 'Revenir')}</button>`
-          : '';
-      // Une leçon proposée pour la mémoire du projet. Deux boutons, et rien n'entre dans les
-      // prompts avant que l'un des deux ait été cliqué : c'est cette relecture qui empêche la
-      // mémoire de se remplir de banalités.
-      const lesson = item.memoryId
-        ? ` <button class="msg-undo" data-memory-keep="${esc(item.memoryId)}"><svg class="icon"><use href="#i-check"/></svg>Garder</button>` +
-          ` <button class="msg-undo" data-memory-drop="${esc(item.memoryId)}"><svg class="icon"><use href="#i-close"/></svg>Écarter</button>`
-        : '';
-      return `<div class="msg-notice" data-item="${item.id}"><span>${esc(item.text)}${undo}${lesson}</span></div>`;
-    }
-
-    default:
-      return '';
-  }
+  return messageRenderer.renderItem(item, { conversationId: state.currentId });
 }
 
 function atBottom() {
@@ -1764,14 +1538,200 @@ function scrollDown(force) {
   if (force || atBottom()) el.scrollTop = el.scrollHeight;
 }
 
+function readingPosition() {
+  const viewport = $('#messages');
+  if (!viewport || $('#conv-view').classList.contains('hidden')) return null;
+  const bottom = atBottom();
+  if (bottom) return { itemId: null, offset: 0, atBottom: true };
+  const top = viewport.getBoundingClientRect().top;
+  const anchor = [...viewport.querySelectorAll('[data-item]')].find(
+    (node) => node.getBoundingClientRect().bottom > top
+  );
+  if (!anchor) return null;
+  return {
+    itemId: anchor.dataset.item,
+    offset: anchor.getBoundingClientRect().top - top,
+    atBottom: false,
+  };
+}
+
+function rememberReadingPosition(convId = state.currentId) {
+  if (!convId || !window.AgentHubNavigation) return;
+  const position = readingPosition();
+  if (position) window.AgentHubNavigation.saveScroll(convId, position);
+}
+
+function restoreReadingPosition(position) {
+  if (!position || position.atBottom || !position.itemId) return false;
+  const viewport = $('#messages');
+  const node = viewport.querySelector(`[data-item="${cssEscape(position.itemId)}"]`);
+  if (!node) return false;
+  const top = viewport.getBoundingClientRect().top;
+  viewport.scrollTop += node.getBoundingClientRect().top - top - (Number(position.offset) || 0);
+  return true;
+}
+
+let readingTimer = null;
+$('#messages').addEventListener('scroll', () => {
+  clearTimeout(readingTimer);
+  readingTimer = setTimeout(() => rememberReadingPosition(), 180);
+});
+
+const MESSAGE_PAGE_SIZE = 100;
+function messagePageSize(viewportWidth) {
+  return Number(viewportWidth) <= 860 ? 50 : MESSAGE_PAGE_SIZE;
+}
+let messagePage = {
+  total: 0,
+  hasMore: false,
+  before: null,
+  hasNewer: false,
+  after: null,
+  pendingNew: 0,
+  loadingOlder: false,
+};
+
+function setMessagePage(page, fallbackTotal) {
+  messagePage = {
+    total: Number(page && page.total) || fallbackTotal || 0,
+    hasMore: Boolean(page && page.hasMore),
+    before: (page && page.before) || null,
+    hasNewer: Boolean(page && page.hasNewer),
+    after: (page && page.after) || null,
+    pendingNew: 0,
+    loadingOlder: false,
+  };
+}
+
+function renderHistoryControls() {
+  const older = $('#messages .history-before');
+  const newer = $('#messages .history-after');
+  if (older) {
+    older.innerHTML = messagePage.hasMore
+      ? `<button data-history-older ${messagePage.loadingOlder ? 'disabled' : ''}>${
+          messagePage.loadingOlder ? 'Chargement…' : 'Afficher les messages précédents'
+        }</button>`
+      : '';
+  }
+  if (newer) {
+    const count = messagePage.pendingNew;
+    newer.innerHTML = messagePage.hasNewer || count
+      ? `<button data-history-recent>${
+          count
+            ? `Voir ${nf.format(count)} nouveau${count > 1 ? 'x' : ''} message${count > 1 ? 's' : ''}`
+            : 'Revenir aux messages récents'
+        }</button>`
+      : '';
+  }
+}
+
 function renderMessages() {
   const el = $('#messages');
   const conv = state.current;
-  el.innerHTML = conv.items.length
-    ? conv.items.map(renderItem).join('')
-    : '<div class="empty">Aucun message</div>';
-  if (state.isRunning) showProcessing();
-  scrollDown(true);
+  el.innerHTML =
+    '<div class="history-control history-before"></div>' +
+    (conv.items.length ? conv.items.map(renderItem).join('') : '<div class="empty">Aucun message</div>') +
+    '<div class="history-control history-after"></div>';
+  renderHistoryControls();
+  if (state.isRunning && !messagePage.hasNewer) showProcessing();
+  if (!messagePage.hasNewer) scrollDown(true);
+}
+
+function messageNode(item) {
+  const html = renderItem(item);
+  if (!html) return null;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  return wrap.firstElementChild;
+}
+
+function appendMessageItem(item, animate = false) {
+  const node = messageNode(item);
+  if (!node) return;
+  if (animate) node.classList.add('is-new');
+  const marker = $('#messages .history-after');
+  $('#messages').insertBefore(node, marker || null);
+}
+
+function replaceMessageItem(item) {
+  if (!state.current) return false;
+  const idx = state.current.items.findIndex((it) => it.id === item.id);
+  const previous = idx === -1 ? null : state.current.items[idx];
+  if (previous && previous._resultExpanded && !item._resultExpanded) {
+    item.result = previous.result;
+    item.resultLength = previous.resultLength;
+    item.resultTruncated = false;
+    item._resultExpanded = true;
+  }
+  if (idx !== -1) state.current.items[idx] = item;
+  const node = document.querySelector(`[data-item="${cssEscape(item.id)}"]`);
+  if (!node) return idx !== -1;
+  const wasOpen = node.open;
+  const fresh = messageNode(item);
+  if (fresh) {
+    if (wasOpen !== undefined && 'open' in fresh) fresh.open = wasOpen;
+    node.replaceWith(fresh);
+  }
+  return true;
+}
+
+async function loadOlderMessages() {
+  if (
+    !state.currentId ||
+    !state.current ||
+    !messagePage.hasMore ||
+    !messagePage.before ||
+    messagePage.loadingOlder
+  ) {
+    return;
+  }
+  const id = state.currentId;
+  const before = messagePage.before;
+  const viewport = $('#messages');
+  messagePage.loadingOlder = true;
+  renderHistoryControls();
+  try {
+    const data = await api(
+      'GET',
+      `/api/conversations/${encodeURIComponent(id)}?limit=${messagePageSize(window.innerWidth)}&before=${encodeURIComponent(
+        before
+      )}`
+    );
+    if (state.currentId !== id || !state.current) return;
+    // Capturée après le réseau : la personne a pu défiler et le direct a pu ajouter des
+    // cartes entre-temps. Cette position est celle qu'il faut réellement préserver.
+    const anchor = [...viewport.querySelectorAll('[data-item]')].find(
+      (node) => node.getBoundingClientRect().bottom >= viewport.getBoundingClientRect().top
+    );
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+    const known = new Set(state.current.items.map((item) => item.id));
+    const older = (data.conversation.items || []).filter((item) => !known.has(item.id));
+    state.current.items = older.concat(state.current.items);
+    const marker = $('#messages .history-before');
+    if (marker) {
+      const fragment = document.createDocumentFragment();
+      for (const item of older) {
+        const node = messageNode(item);
+        if (node) fragment.appendChild(node);
+      }
+      marker.after(fragment);
+    }
+    messagePage.total = Number(data.page && data.page.total) || messagePage.total;
+    messagePage.hasMore = Boolean(data.page && data.page.hasMore);
+    messagePage.before = (data.page && data.page.before) || null;
+    messagePage.loadingOlder = false;
+    renderHistoryControls();
+    // Une ancre DOM, plutôt qu'un delta de scrollHeight : des items temps réel ont pu
+    // s'ajouter en bas pendant le GET et ne doivent pas déplacer ce que la personne lisait.
+    if (anchor && anchorTop != null && anchor.isConnected) {
+      viewport.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
+  } catch (err) {
+    if (state.currentId !== id) return;
+    messagePage.loadingOlder = false;
+    renderHistoryControls();
+    toastError(`Historique indisponible : ${err.message}`);
+  }
 }
 
 // État visible entre l'envoi du message et le premier delta / outil. Sans lui, un CLI
@@ -1788,7 +1748,8 @@ function showProcessing() {
     '<span class="processing-dots" aria-hidden="true"><i></i><i></i><i></i></span>' +
     '<span>Réflexion en cours…</span>';
   const stick = atBottom();
-  $('#messages').appendChild(el);
+  const marker = $('#messages .history-after');
+  $('#messages').insertBefore(el, marker || null);
   scrollDown(stick);
 }
 
@@ -1805,12 +1766,39 @@ function streamEl(kind) {
     el.className = `streaming${kind === 'thinking' ? ' think-stream' : ''}`;
     el.dataset.kind = kind;
     el.dataset.raw = '';
-    $('#messages').appendChild(el);
+    const marker = $('#messages .history-after');
+    $('#messages').insertBefore(el, marker || null);
   }
   return el;
 }
 
+const pendingStreamDeltas = new Map();
+let streamFrame = null;
+
+function flushStreamDeltas() {
+  streamFrame = null;
+  const stick = atBottom();
+  for (const [kind, text] of pendingStreamDeltas) {
+    const el = streamEl(kind);
+    el.dataset.raw += text;
+    el.innerHTML =
+      kind === 'thinking'
+        ? `${esc(el.dataset.raw)}<span class="caret"></span>`
+        : `${md(el.dataset.raw)}<span class="caret"></span>`;
+  }
+  pendingStreamDeltas.clear();
+  scrollDown(stick);
+}
+
+function queueStreamDelta(kind, text) {
+  pendingStreamDeltas.set(kind, (pendingStreamDeltas.get(kind) || '') + text);
+  if (!streamFrame) streamFrame = requestAnimationFrame(flushStreamDeltas);
+}
+
 function clearStreams() {
+  pendingStreamDeltas.clear();
+  if (streamFrame) cancelAnimationFrame(streamFrame);
+  streamFrame = null;
   document.querySelectorAll('.streaming').forEach((el) => el.remove());
 }
 
@@ -1826,7 +1814,6 @@ function renderHead() {
     providerIcon(c.provider),
     `<code>${esc(wt ? wt.repo : c.cwd)}</code>`,
     wt ? `<span class="branch-tag">${esc(wt.branch)}</span>` : null,
-    c.model ? esc(c.model) : null,
     statusLabel(c.status),
     // Dit à côté du statut, parce que c'est le statut qu'il corrige : « travaille » et
     // « silencieux depuis 40 min » ne racontent pas la même histoire.
@@ -1836,9 +1823,12 @@ function renderHead() {
   $('#conv-meta').innerHTML = bits.join(' · ');
   $('#mobile-head-meta').innerHTML = bits.join(' · ');
 
-  renderConvModel(c);
-  setEffortSelect($('#conv-effort'), c.provider, c.model || '', false);
-  $('#conv-effort').value = c.effort || '';
+  const desiredModel = conversationModelSettings.state(c.id).desired;
+  const modelConfig = desiredModel ? { ...c, ...desiredModel } : c;
+  renderConvModel(modelConfig);
+  setEffortSelect($('#conv-effort'), c.provider, modelConfig.model || '', false);
+  $('#conv-effort').value = modelConfig.effort || '';
+  renderPromptModel();
 
   renderBrowserToggle();
   renderWatchToggle();
@@ -1940,6 +1930,7 @@ $('#mobile-head-menu').addEventListener('click', (e) => {
     merge: '#btn-merge',
     relay: '#btn-relay',
     delete: '#btn-delete',
+    'model-settings': '#btn-model-settings',
   }[action.dataset.headAction];
   if (target) $(target).click();
 });
@@ -2159,9 +2150,9 @@ function gitCanvas(data) {
 // compte Gravatar, la colonne reste lisible au lieu de montrer des carrés vides.
 //
 // L'empreinte de l'adresse est calculée par le serveur (`lib/git.js`) : `crypto.subtle` n'existe
-// qu'en contexte sécurisé, et l'app est souvent servie en HTTP clair (localhost / VPN). La
-// requête d'image, elle, part du navigateur — c'est donc lui qui parle à gravatar.com, en
-// n'envoyant que cette empreinte.
+// qu'en contexte sécurisé, et l'app est souvent servie en HTTP clair (localhost / VPN). La requête
+// d'image, elle, part du navigateur — c'est donc lui qui parle à gravatar.com, en n'envoyant que
+// cette empreinte.
 
 const GIT_AVATAR_PX = 40; // deux fois la taille affichée : les écrans denses ne floutent pas
 
@@ -2191,7 +2182,7 @@ function hasGravatar(hash) {
   return gravatarSeen.get(hash);
 }
 
-/** « Jane Doe » → « AM ». Le premier prénom et le dernier nom, comme partout ailleurs. */
+/** « Jane Doe » → « JD ». Le premier prénom et le dernier nom, comme partout ailleurs. */
 function gitInitials(name) {
   const parts = String(name || '')
     .trim()
@@ -2442,6 +2433,10 @@ $('#btn-plans').addEventListener('click', () => {
   const opening = $('#plans-panel').classList.contains('hidden');
   closeGitPanel();
   closeNotesPanel();
+  if (!opening) {
+    closePlansPanel();
+    return;
+  }
   $('#plans-panel').classList.toggle('hidden', !opening);
   $('#plans-grip').classList.toggle('hidden', !opening);
   $('#btn-plans').classList.toggle('on', opening);
@@ -2462,6 +2457,8 @@ const WATCH_URL_EVERY = 5;
 
 let watchTimer = null;
 let watchTicks = 0;
+let watchGeneration = 0;
+let watchTickBusy = false;
 
 /** Le bouton n'apparaît que là où il y a quelque chose à regarder. */
 function renderWatchToggle() {
@@ -2476,12 +2473,17 @@ function watchState(text) {
   $('#watch-state').textContent = text || '';
 }
 
-async function watchTick() {
+async function watchTick(generation = watchGeneration) {
+  // Une capture lente ne doit pas empiler les requêtes du setInterval, ni repeindre une
+  // modale fermée pendant son téléchargement.
+  if (watchTickBusy || generation !== watchGeneration || !watchTimer) return;
+  watchTickBusy = true;
   try {
     // L'horodatage casse le cache : sans lui le navigateur reservirait la même image.
     const res = await fetch(`/api/browser/live/frame?t=${Date.now()}`);
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'indisponible');
     const blob = await res.blob();
+    if (generation !== watchGeneration || !watchTimer) return;
     const img = $('#watch-img');
     const old = img.src;
     img.src = URL.createObjectURL(blob);
@@ -2490,32 +2492,42 @@ async function watchTick() {
     if (old.startsWith('blob:')) URL.revokeObjectURL(old);
     watchState(res.headers.get('X-Frame-Stale') ? "l'agent utilise le navigateur…" : '');
   } catch (err) {
-    watchState(err.message);
+    if (generation === watchGeneration && watchTimer) watchState(err.message);
   }
 
-  if (watchTicks % WATCH_URL_EVERY === 0) {
+  if (generation === watchGeneration && watchTimer && watchTicks % WATCH_URL_EVERY === 0) {
     try {
       const { tab } = await api('GET', '/api/browser/live');
-      $('#watch-url').textContent = tab.url || 'page inconnue';
-      $('#watch-url').title = tab.title || '';
+      if (generation === watchGeneration && watchTimer) {
+        $('#watch-url').textContent = tab.url || 'page inconnue';
+        $('#watch-url').title = tab.title || '';
+      }
     } catch {
       /* l'image suffit : une adresse manquante n'empêche pas de regarder */
     }
   }
-  watchTicks += 1;
+  if (generation === watchGeneration && watchTimer) watchTicks += 1;
+  if (generation === watchGeneration) watchTickBusy = false;
 }
 
 function openWatch() {
+  if (watchTimer) return;
   $('#watch-modal').classList.remove('hidden');
   watchTicks = 0;
   watchState('connexion…');
-  watchTick();
-  watchTimer = setInterval(watchTick, WATCH_FRAME_MS);
+  watchTickBusy = false;
+  const generation = ++watchGeneration;
+  // Le timer existe avant le premier tick : le même garde protège le premier chargement et
+  // les suivants, sans cas spécial qui pourrait survivre à closeWatch().
+  watchTimer = setInterval(() => watchTick(generation), WATCH_FRAME_MS);
+  watchTick(generation);
 }
 
 function closeWatch() {
+  watchGeneration += 1;
   clearInterval(watchTimer);
   watchTimer = null;
+  watchTickBusy = false;
   $('#watch-modal').classList.add('hidden');
   const img = $('#watch-img');
   if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
@@ -2541,6 +2553,8 @@ let noteEditId = null;
 let notePending = [];
 /** Ticket dont le choix « Prompt » est déplié. */
 let notePromptOpen = null;
+/** Invalide les lectures de fichiers et sauvegardes d'un formulaire remplacé. */
+let noteFormGeneration = 0;
 
 function notesError(text) {
   $('#notes-error').textContent = text || '';
@@ -2548,13 +2562,25 @@ function notesError(text) {
 
 async function loadNotes() {
   if (!state.currentId) return;
+  const convId = state.currentId;
+  const context = window.AgentHubActionContext
+    ? window.AgentHubActionContext.capture({ conversationId: convId, key: 'notes' })
+    : null;
   try {
-    const data = await api('GET', `/api/notes?convId=${state.currentId}`);
+    const data = await api('GET', `/api/notes?convId=${convId}`, undefined, {
+      signal: context && context.signal,
+    });
+    if ((context && !context.isCurrent()) || state.currentId !== convId) return;
     state.notesProject = data.project;
     state.notes = data.tickets || [];
     renderNotes();
   } catch (err) {
-    $('#notes-body').innerHTML = `<div class="notes-empty">${esc(err.message)}</div>`;
+    if (err.name === 'AbortError') return;
+    if (state.currentId === convId) {
+      $('#notes-body').innerHTML = `<div class="notes-empty">${esc(err.message)}</div>`;
+    }
+  } finally {
+    if (context) context.release();
   }
 }
 
@@ -2642,6 +2668,7 @@ function noteCard(t) {
 
 /** Ouvre le formulaire, vide pour créer ou rempli pour modifier. */
 function openNoteForm(ticket) {
+  noteFormGeneration += 1;
   noteEditId = ticket ? ticket.id : null;
   notePending = [];
   $('#note-title').value = ticket ? ticket.title : '';
@@ -2654,6 +2681,7 @@ function openNoteForm(ticket) {
 }
 
 function closeNoteForm() {
+  noteFormGeneration += 1;
   noteEditId = null;
   notePending = [];
   $('#notes-form').classList.add('hidden');
@@ -2680,14 +2708,18 @@ $('#btn-note-image').addEventListener('click', () => $('#note-file').click());
 $('#note-file').addEventListener('change', async (e) => {
   const files = [...e.target.files];
   e.target.value = ''; // permet de re-choisir le même fichier
+  const generation = noteFormGeneration;
   for (const file of files) {
     try {
-      notePending.push({ name: file.name, dataUrl: await fileToDataUrl(file) });
+      const dataUrl = await fileToDataUrl(file);
+      // Le formulaire a pu être fermé, ou remplacé par l'édition d'un autre ticket.
+      if (generation !== noteFormGeneration || $('#notes-form').classList.contains('hidden')) return;
+      notePending.push({ name: file.name, dataUrl });
     } catch {
-      notesError(`${file.name} : lecture impossible.`);
+      if (generation === noteFormGeneration) notesError(`${file.name} : lecture impossible.`);
     }
   }
-  renderNoteAttachments();
+  if (generation === noteFormGeneration) renderNoteAttachments();
 });
 
 function fileToDataUrl(file) {
@@ -2703,16 +2735,22 @@ $('#btn-note-save').addEventListener('click', async () => {
   const title = $('#note-title').value.trim();
   if (!title) return notesError('Un titre, au minimum.');
   const body = { title, body: $('#note-body').value.trim(), images: notePending };
+  const generation = noteFormGeneration;
+  const editId = noteEditId;
+  const convId = state.currentId;
   $('#btn-note-save').disabled = true;
   try {
-    if (noteEditId) await api('POST', `/api/notes/${noteEditId}`, body);
-    else await api('POST', '/api/notes', { ...body, convId: state.currentId });
+    if (editId) await api('POST', `/api/notes/${editId}`, body);
+    else await api('POST', '/api/notes', { ...body, convId });
+    // Une ancienne sauvegarde ne ferme jamais le nouveau formulaire ouvert entre-temps.
+    if (generation !== noteFormGeneration) return;
     closeNoteForm();
     // La liste arrive par le websocket, mais on ne l'attend pas : le geste doit se voir
     // tout de suite, y compris si la diffusion se perd.
-    await loadNotes();
+    if (state.currentId === convId) await loadNotes();
   } catch (err) {
-    notesError(err.message);
+    if (generation === noteFormGeneration) notesError(err.message);
+    else toastError(`Le ticket n’a pas pu être enregistré : ${err.message}`);
   } finally {
     $('#btn-note-save').disabled = false;
   }
@@ -2780,6 +2818,7 @@ $('#notes-body').addEventListener('click', async (e) => {
 async function startTeam(id) {
   const ticket = (state.notes || []).find((t) => t.id === id);
   const provider = (state.current && state.current.provider) || 'claude';
+  const sourceConvId = state.currentId;
   const ok = await askConfirm({
     title: `Lancer une équipe sur « ${ticket ? ticket.title : 'ce ticket'} » ?`,
     body:
@@ -2797,7 +2836,9 @@ async function startTeam(id) {
     // On ouvre la première étape : c'est là que ça se passe, et la sidebar imbriquera les
     // deux suivantes dessous à mesure qu'elles naissent.
     await refreshList();
-    if (run && run.convs && run.convs.plan) await openConv(run.convs.plan);
+    if (state.currentId === sourceConvId && run && run.convs && run.convs.plan) {
+      await openConv(run.convs.plan);
+    }
   } catch (err) {
     toastError(err.message);
   }
@@ -2810,24 +2851,29 @@ async function startTeam(id) {
  * à l'agent de le passer en « fait » sans avoir à deviner lequel c'était.
  */
 async function sendTicket(id, asNew) {
+  const convId = state.currentId;
+  const current = state.current;
+  const project = state.notesProject;
+  if (!convId || !current) return;
   notePromptOpen = null;
   renderNotes();
   try {
     const { prompt } = await api('GET', `/api/notes/${id}/prompt`);
+    if (state.currentId !== convId) return;
     if (asNew) {
       const data = await api('POST', '/api/conversations', {
-        provider: state.current.provider,
+        provider: current.provider,
         // Le projet, pas le dossier de travail : depuis une conversation isolée, la
         // nouvelle doit partir du dépôt et non du worktree de la précédente.
-        cwd: state.notesProject,
-        model: state.current.model || null,
-        effort: state.current.effort || null,
+        cwd: project,
+        model: current.model || null,
+        effort: current.effort || null,
         prompt,
       });
       await refreshList();
-      await openConv(data.conversation.id);
+      if (state.currentId === convId) await openConv(data.conversation.id);
     } else {
-      await api('POST', `/api/conversations/${state.currentId}/messages`, { prompt });
+      await api('POST', `/api/conversations/${convId}/messages`, { prompt });
     }
   } catch (err) {
     toastError(err.message);
@@ -2912,36 +2958,50 @@ function renderContextActions(pct) {
   mobileResume.classList.toggle('hidden', !hasUser);
 }
 
+const conversationModelSettings = window.AgentHubModelSettings.create({
+  save: (id, pair) => api('PATCH', `/api/conversations/${id}`, pair),
+  onSaved: (id, data) => {
+    if (state.currentId === id && state.current && data.conversation) {
+      mergeConversationModelMetadata(data.conversation);
+    }
+  },
+  onChange: (id) => {
+    if (state.currentId === id && state.current) renderHead();
+  },
+});
+
+function mergeConversationModelMetadata(metadata) {
+  if (!state.current || metadata.id !== state.currentId) return;
+  for (const key of ['title', 'model', 'effort', 'modelSelection', 'lastModelSelection', 'updatedAt']) {
+    if (Object.prototype.hasOwnProperty.call(metadata, key)) state.current[key] = metadata[key];
+  }
+}
+
+async function saveConversationModel(id, pair) {
+  try {
+    await conversationModelSettings.update(id, pair);
+  } catch (error) {
+    toastError(`Changement non enregistré : ${error.message}`);
+  }
+}
+
 $('#conv-model').addEventListener('change', async (e) => {
   if (!state.currentId || !state.current) return;
+  const id = state.currentId;
   const model = e.target.value;
   const provider = state.current.provider;
   const allowed = effortList(provider, model);
   const effortOk =
     !state.current.effort || allowed.some((item) => item.value === state.current.effort);
-  const patch = { model };
-  // Un effort que la nouvelle version refuse ferait échouer le prochain message.
-  if (!effortOk) patch.effort = '';
-  try {
-    await api('PATCH', `/api/conversations/${state.currentId}`, patch);
-    state.current.model = model || null;
-    if (!effortOk) state.current.effort = null;
-    renderHead();
-  } catch (err) {
-    toastError(err.message);
-    renderHead();
-  }
+  await saveConversationModel(id, { model, effort: effortOk ? state.current.effort : '' });
 });
 
 $('#conv-effort').addEventListener('change', async (e) => {
   if (!state.currentId) return;
+  const id = state.currentId;
   const effort = e.target.value;
-  try {
-    await api('PATCH', `/api/conversations/${state.currentId}`, { effort });
-    state.current.effort = effort || null;
-  } catch (err) {
-    toastError(err.message);
-  }
+  const desired = conversationModelSettings.state(id).desired;
+  await saveConversationModel(id, { model: (desired || state.current).model || '', effort });
 });
 
 $('#btn-compact').addEventListener('click', async () => {
@@ -2994,13 +3054,16 @@ $('#btn-resume-light').addEventListener('click', () => {
 
 $('#btn-browser').addEventListener('click', async () => {
   if (!state.currentId || !state.current) return;
+  const id = state.currentId;
   const next = !state.current.browser;
   try {
-    await api('PATCH', `/api/conversations/${state.currentId}`, { browser: next });
+    await api('PATCH', `/api/conversations/${id}`, { browser: next });
+    if (state.currentId !== id || !state.current) return;
     state.current.browser = next;
     renderBrowserToggle();
   } catch (err) {
     toastError(err.message);
+    if (state.currentId === id && state.current) renderBrowserToggle();
   }
 });
 
@@ -3036,7 +3099,7 @@ async function renderLimits(force) {
     limitsRetry = null;
   }
 
-  // Le nom du provider est capitalisé, pas le compte : « Dev@Example.Com » sinon.
+  // Le nom du provider est capitalisé, pas le compte : « Dev@Example.Test » sinon.
   const head =
     `<div class="limit-head">${providerIcon(provider)}` +
     `<span class="limit-prov">${esc(provider)}</span>` +
@@ -3117,65 +3180,271 @@ function setRunning(running) {
   state.isRunning = running;
   $('#btn-send').classList.toggle('hidden', running);
   $('#btn-stop').classList.toggle('hidden', !running);
-  if (running) showProcessing();
+  if (running && !messagePage.hasNewer) showProcessing();
   else clearStreams();
 }
 
 function renderPromptModel() {
-  const el = $('#prompt-model');
-  const models = (state.current && state.current.lastModels) || [];
-  el.textContent = models.join(' + ');
-  el.title = models.length ? `Modèle utilisé au dernier turn : ${models.join(' + ')}` : '';
-  el.classList.toggle('hidden', !models.length);
-  el.closest('.prompt-shell').classList.toggle('has-model', Boolean(models.length));
+  const conv = state.current;
+  if (!conv) return;
+  const saving = conversationModelSettings.state(conv.id);
+  const config = saving.desired || conv;
+  const description = window.AgentHubModelPicker.describe(conv.provider, config.model, config.effort, state.models);
+  const next = saving.desired ? null : conv.modelSelection && conv.modelSelection.next;
+  const label = next && next.label ? next.label : description.label;
+  const effort = next && next.effortLabel ? next.effortLabel : description.effortLabel;
+  $('#prompt-model').textContent = `Prochain message · ${label}${effort ? ` · ${effort}` : ''} ⌄`;
+  $('#prompt-model').title = description.detail || 'Choisir le modèle et le raisonnement';
+  $('#btn-model-settings').textContent = `${label} ⌄`;
+  $('#btn-model-settings').title = `Modèle et raisonnement · ${effort || 'défaut du CLI'}`;
+  const lines = [];
+  const selection = conv.modelSelection || {};
+  if (state.isRunning) {
+    const active = selection.active;
+    if (active) {
+      const current = window.AgentHubModelPicker.describe(conv.provider, active.model, active.effort, state.models);
+      lines.push(`En cours : ${active.label || current.label}${active.effortLabel ? ` · ${active.effortLabel}` : ''}`);
+    } else lines.push('En cours : modèle du lancement non relevé');
+  }
+  const last = selection.last;
+  if (last && last.models && last.models.length) {
+    const title = last.source === 'measured' ? 'Dernier relevé' : ['requested', 'catalog-default'].includes(last.source) ? 'Dernier modèle demandé' : 'Ancien relevé';
+    lines.push(`${title} : ${last.models.map((model) => window.AgentHubModelPicker.name(conv.provider, model, state.models)).join(' + ')}`);
+  } else if (last && last.source === 'provider-default-unknown') {
+    lines.push('Dernier lancement : modèle non confirmé par le CLI');
+  } else if (conv.lastModels && conv.lastModels.length) {
+    lines.push(`Ancien relevé : ${conv.lastModels.join(' + ')}`);
+  }
+  $('#model-history').textContent = lines.join(' · ');
+  $('#model-history').classList.toggle('hidden', !lines.length);
+  const status = $('#model-save-status');
+  status.textContent = saving.pending ? 'Enregistrement du choix…' : saving.error ? 'Changement non enregistré. L’envoi attend une configuration enregistrée.' : '';
+  status.classList.toggle('hidden', !saving.pending && !saving.error);
+  status.classList.toggle('error', Boolean(saving.error));
+  $('#model-save-actions').classList.toggle('hidden', !saving.error || saving.pending);
+  $('#btn-send').disabled = saving.pending || Boolean(saving.error);
 }
 
-async function openConv(id, focusItemId) {
-  const data = await api('GET', `/api/conversations/${id}`);
+let modelPickerOpen = false;
+async function openModelPicker() {
+  const conv = state.current;
+  if (!conv || modelPickerOpen) return;
+  modelPickerOpen = true;
+  closeMobileHeadMenu();
+  const scope = window.AgentHubActionContext.capture({ conversationId: conv.id });
+  scope.signal.addEventListener('abort', () => closeDialog(), { once: true });
+  let picker;
+  try {
+    const desired = conversationModelSettings.state(conv.id).desired || conv;
+    const decision = openDialog({
+      title: `${PROVIDER_LABELS[conv.provider] || conv.provider} · modèle et raisonnement`, cancelValue: false,
+      buildBody: (host) => {
+        picker = window.AgentHubModelPicker.mount(host, {
+          provider: conv.provider, model: desired.model || '', effort: desired.effort || '',
+          catalog: state.models, running: state.isRunning,
+        });
+        return picker;
+      },
+      validate: () => {
+        if (picker.isValid()) return true;
+        toastError('Renseigne un identifiant de modèle pour la saisie libre.');
+        return false;
+      },
+      buttons: [{ label: 'Annuler', value: false }, { label: 'Appliquer au prochain message', value: true, primary: true }],
+    });
+    document.querySelector('.dialog-box')?.classList.add('model-picker-dialog');
+    const accepted = await decision;
+    if (accepted && scope.isCurrent()) await saveConversationModel(conv.id, picker.read());
+  } finally { modelPickerOpen = false; scope.release(); }
+}
+$('#prompt-model').addEventListener('click', openModelPicker);
+$('#btn-model-settings').addEventListener('click', openModelPicker);
+$('#model-save-retry').addEventListener('click', () => {
+  if (!state.currentId) return;
+  const draft = conversationModelSettings.state(state.currentId).desired;
+  if (draft) saveConversationModel(state.currentId, draft);
+});
+$('#model-save-cancel').addEventListener('click', () => {
+  if (state.currentId) conversationModelSettings.cancelFailed(state.currentId);
+});
+
+let openController = null;
+let openGeneration = 0;
+let openingEvents = [];
+let resyncSerial = 0;
+
+function bufferOpeningEvent(msg) {
+  const convId = msg.convId || (msg.ask && msg.ask.convId) || (msg.conversation && msg.conversation.id);
+  if (!state.current && convId === state.currentId) openingEvents.push(msg);
+}
+
+function applyOpeningEvents(events) {
+  if (!state.current) return;
+  for (const msg of events) {
+    if (msg.type === 'conversation') {
+      mergeConversationModelMetadata(msg.conversation);
+    } else if (msg.type === 'modelSelection') {
+      state.current.modelSelection = msg.modelSelection;
+    } else if (msg.type === 'item' || msg.type === 'itemUpdate') {
+      const idx = state.current.items.findIndex((item) => item.id === msg.item.id);
+      if (idx !== -1) {
+        state.current.items[idx] = msg.item;
+      } else if (msg.type === 'item' && !messagePage.hasNewer) {
+        state.current.items.push(msg.item);
+        messagePage.total += 1;
+      } else if (msg.type === 'item') {
+        messagePage.pendingNew += 1;
+      }
+    } else if (msg.type === 'status') {
+      state.current.status = msg.status;
+      state.isRunning = msg.status === 'working';
+      if (msg.modelSelection) state.current.modelSelection = msg.modelSelection;
+    } else if (msg.type === 'metrics') {
+      if (msg.totalCostUsd != null) state.current.totalCostUsd = msg.totalCostUsd;
+      if (msg.contextTokens != null) state.current.contextTokens = msg.contextTokens;
+      if (msg.contextWindow != null) state.current.contextWindow = msg.contextWindow;
+      if (msg.lastModels != null) state.current.lastModels = msg.lastModels;
+      if (msg.modelSelection) state.current.modelSelection = msg.modelSelection;
+    } else if (msg.type === 'goal') {
+      state.current.goal = msg.goal;
+    } else if (msg.type === 'queue') {
+      state.queue = msg.queue || [];
+    } else if (msg.type === 'ask') {
+      state.ask = msg.ask;
+    } else if (msg.type === 'ask-answered') {
+      state.ask = null;
+    }
+  }
+}
+
+async function openConv(id, focusItemId, options = {}) {
+  rememberReadingPosition();
+  const changedConversation = state.currentId !== id;
+  // Même conversation comprise : « retour aux récents » recharge le fil et ne doit ni
+  // écraser ni concaténer le texte actuellement visible avec une ancienne entrée de la Map.
+  // Sur un retry d'ouverture (`state.current === null`), la Map reste au contraire intacte.
+  parkComposerDraft(state.currentId, Boolean(state.current));
+  if (changedConversation) closeConversationOverlays();
+  if (openController) openController.abort();
+  const generation = ++openGeneration;
+  const controller = new AbortController();
+  openController = controller;
+
+  const navigation = window.AgentHubNavigation;
+  if (options.recent && navigation) navigation.clearScroll(id);
+  const savedPosition =
+    !focusItemId && !options.recent && navigation ? navigation.loadScroll(id) : null;
+  const requestedFocus =
+    focusItemId || (savedPosition && !savedPosition.atBottom ? savedPosition.itemId : null);
+  if (!options.fromRoute && navigation && !SOLO) {
+    navigation.navigate(
+      { conv: id, focus: focusItemId || null },
+      { replace: Boolean(options.replace), silent: true }
+    );
+  }
+
   state.currentId = id;
-  state.current = data.conversation;
-  state.isRunning = data.running;
-  state.queue = data.conversation.queue || [];
-  state.ask = data.ask || null;
+  state.current = null;
+  state.isRunning = false;
+  state.queue = [];
+  state.ask = null;
+  openingEvents = [];
+  setMessagePage(null, 0);
   editingQueueId = null;
+  queueEditText = '';
   renderQueue();
   renderAskPending();
 
-  showView('#conv-view');
+  showView('#conv-view', { route: false });
+  $('#conv-view').classList.add('conv-loading');
+  $('#conv-view').setAttribute('aria-busy', 'true');
+  const summary = state.convs.find((conv) => conv.id === id);
+  $('#conv-title').textContent = summary ? summary.title : 'Conversation';
+  $('#conv-meta').textContent = 'Chargement…';
+  $('#mobile-head-meta').textContent = 'Chargement…';
+  $('#messages').innerHTML =
+    '<div class="conversation-loading" role="status"><span class="processing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Chargement de la conversation…</span></div>';
+  renderList();
+  sendPresence();
   clearStreams();
-  clearAttachments(); // les images en attente appartiennent à la conversation quittée
-  // Le catalogue de skills dépend du fournisseur : sans attendre, l'autocomplétion serait
-  // vide au premier « / » tapé après l'ouverture.
-  loadSkills(data.conversation.provider);
   $('#skill-badge').classList.add('hidden');
   $('#skill-menu').classList.add('hidden');
   closeGitPanel(); // le graphe affiché est celui du projet qu'on quitte
   closeNotesPanel();
+  state.notesProject = null;
+  state.notes = [];
+  notePromptOpen = null;
   closePlansPanel(); // idem : les plans affichés sont ceux du projet qu'on quitte
   closeNoteForm();
   if (watchTimer) closeWatch();
   // Le mode armé appartenait à la conversation qu'on quitte ; l'objectif en cours, lui, vient
   // du serveur avec la conversation.
   armGoal(false);
+
+  const query = new URLSearchParams({ limit: String(messagePageSize(window.innerWidth)) });
+  if (requestedFocus) query.set('focus', requestedFocus);
+  let data;
+  try {
+    data = await api(
+      'GET',
+      `/api/conversations/${encodeURIComponent(id)}?${query}`,
+      undefined,
+      { signal: controller.signal }
+    );
+  } catch (err) {
+    if (err.name === 'AbortError' || generation !== openGeneration) return false;
+    openController = null;
+    $('#conv-view').removeAttribute('aria-busy');
+    $('#conv-meta').textContent = 'Conversation indisponible';
+    $('#mobile-head-meta').textContent = 'Conversation indisponible';
+    $('#messages').innerHTML = `<div class="conversation-error"><strong>Impossible d’ouvrir cette conversation</strong><span>${esc(
+      err.message
+    )}</span><button data-retry-conv="${escAttr(id)}">Réessayer</button></div>`;
+    return false;
+  }
+  if (generation !== openGeneration) return false;
+  openController = null;
+
+  const buffered = openingEvents;
+  openingEvents = [];
+  state.current = data.conversation;
+  state.isRunning = data.running;
+  state.queue = data.conversation.queue || [];
+  state.ask = data.ask || null;
+  setMessagePage(data.page, data.conversation.items.length);
+  applyOpeningEvents(buffered);
+  $('#conv-view').classList.remove('conv-loading');
+  $('#conv-view').removeAttribute('aria-busy');
+
+  // Le catalogue de skills dépend du fournisseur : sans attendre, l'autocomplétion serait
+  // vide au premier « / » tapé après l'ouverture.
+  loadSkills(data.conversation.provider);
+  renderQueue();
+  renderAskPending();
   renderGoalLive();
   renderHead();
   renderPromptModel();
   renderMessages();
+  restoreComposerDraft(id);
   renderList();
   renderLimits();
   // Après `renderMessages` : c'est lui qui vient de poser les cartes d'idée que la todo
   // doit marquer.
   loadNotesQuietly();
-  sendPresence(); // `showView` a été appelé avant que `state.currentId` ne soit à jour
   if (focusItemId) focusItem(focusItemId);
-  await refreshList();
-  if (!focusItemId) $('#prompt').focus();
+  else if (savedPosition && !savedPosition.atBottom) restoreReadingPosition(savedPosition);
+  refreshList().catch(() => {});
+  if (!requestedFocus && matchMedia('(pointer: fine)').matches) $('#prompt').focus();
+  return true;
 }
 
-function showNew() {
+function showNew(options = {}) {
+  rememberReadingPosition();
+  parkComposerDraft(state.currentId, Boolean(state.current));
+  closeConversationOverlays();
   state.currentId = null;
   state.current = null;
-  showView('#new-view');
+  showView('#new-view', options);
   const active = renderProviderPick('#provider-pick', state.provider);
   if (active && active !== state.provider) {
     state.provider = active;
@@ -3184,7 +3453,7 @@ function showNew() {
   renderNoProvider();
   renderList();
   renderLimits();
-  $('#new-prompt').focus();
+  if (matchMedia('(pointer: fine)').matches) $('#new-prompt').focus();
 }
 
 // --- Consommation ---------------------------------------------------------
@@ -3365,196 +3634,113 @@ function renderUsage(data) {
       : `Mois de ${monthLabel(data.month)} · ${nf.format(t.turns)} turns`;
 }
 
-const VIEWS = [
-  '#new-view',
-  '#usage-view',
-  '#conv-view',
-  '#triggers-view',
-  '#skills-view',
-  '#connections-view',
-  '#gallery-view',
-  '#server-view',
-  '#settings-view',
-];
+const BUILTIN_VIEWS = {
+  '#new-view': 'new',
+  '#usage-view': 'usage',
+  '#conv-view': 'conversation',
+  '#triggers-view': 'triggers',
+  '#skills-view': 'skills',
+  '#connections-view': 'connections',
+  '#gallery-view': 'gallery',
+  '#server-view': 'server',
+  '#settings-view': 'settings',
+};
 
-// --- Serveur ---------------------------------------------------------------
-//
-// Tout vient d'adminPanel. Rien n'est recalculé ici : dupliquer ce que l'autre application
-// sait faire est exactement ce qu'on voulait éviter en « centralisant ».
+let applyingRoute = false;
 
-function fmtBytes(n) {
-  const bytes = Number(n) || 0;
-  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(2)} To`;
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} Go`;
-  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} Mo`;
-  return `${(bytes / 1e3).toFixed(0)} ko`;
+function emitNavigation(view, extra = {}) {
+  const route = window.AgentHubNavigation ? window.AgentHubNavigation.current() : null;
+  window.dispatchEvent(
+    new CustomEvent('agenthub:navigation', {
+      detail: { view, convId: state.currentId, route, ...extra },
+    })
+  );
 }
 
-function fmtUptime(seconds) {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  return days ? `${days} j ${hours} h` : `${hours} h`;
-}
+// --- Serveur --------------------------------------------------------------
 
-/** Un relevé en échec ne vide pas la page : il dit ce qu'il n'a pas pu lire, à sa place. */
-function serverError(part, label) {
-  return `<div class="empty">${esc(label)} — ${esc(part.error)}</div>`;
-}
-
-function renderServer(data) {
-  // Le lien vers le panneau, avant tout le reste : il doit marcher même quand rien n'est
-  // configuré, puisque c'est là qu'on va justement pour le configurer.
-  if (data.webUrl) $('#server-open').href = data.webUrl;
-
-  if (!data.available) {
-    $('#server-sub').textContent = 'Panneau non configuré';
-    $('#server-totals').innerHTML = '';
-    $('#server-disk').innerHTML = `<div class="empty">
-      Aucun jeton de service. Le créer une fois pour toutes, côté adminPanel :<br>
-      <code>cd ./adminPanel &amp;&amp; node -e "console.log(require('./lib/service-token').generate())"</code><br>
-      Il est en lecture seule : ce panneau ne peut rien changer d'ici.</div>`;
-    for (const id of ['#server-pm2', '#server-services', '#server-sites']) $(id).innerHTML = '';
-    return;
-  }
-
-  const sys = data.system || {};
-  $('#server-sub').textContent = sys.hostname
-    ? `${sys.hostname} · ${sys.platform} · node ${sys.nodeVersion}`
-    : 'Relevé partiel';
-
-  $('#server-totals').innerHTML = sys.error
-    ? ''
-    : [
-        {
-          label: 'Charge',
-          value: (sys.loadAvg || [0])[0].toFixed(2),
-          note: `${sys.cpuCount} cœurs · ${(sys.loadAvg || []).map((l) => l.toFixed(2)).join(' / ')}`,
-        },
-        {
-          label: 'Mémoire',
-          value: `${Math.round(((sys.memory || {}).used / (sys.memory || {}).total) * 100)} %`,
-          note: `${fmtBytes((sys.memory || {}).used)} sur ${fmtBytes((sys.memory || {}).total)}`,
-          accent: (sys.memory || {}).used / (sys.memory || {}).total > 0.9,
-        },
-        {
-          label: 'Disque',
-          value: `${Math.round(((sys.disk || {}).used / (sys.disk || {}).total) * 100)} %`,
-          note: `${fmtBytes((sys.disk || {}).free)} libres`,
-        },
-        { label: 'En marche depuis', value: fmtUptime(sys.uptime || 0) },
-      ]
-        .map(
-          (tile) => `<div class="tile">
-            <div class="tile-label">${tile.label}</div>
-            <div class="tile-value${tile.accent ? ' accent' : ''}">${esc(tile.value)}</div>
-            ${tile.note ? `<div class="tile-note">${esc(tile.note)}</div>` : ''}
-          </div>`
-        )
-        .join('');
-
-  const disk = data.disk;
-  $('#server-disk').innerHTML = disk.error
-    ? serverError(disk, 'Disques')
-    : `<h3 class="board-title">Disques</h3>
-      <div class="bars">${disk
-        .map(
-          (d) => `<div class="bar-row" title="${esc(d.source)} · ${esc(d.fstype)}">
-            <span class="bar-name">${esc(d.target)}</span>
-            <span class="bar-track"><span class="bar-fill" style="width:${d.usedPercent}%"></span></span>
-            <span class="bar-num">${d.usedPercent} %</span>
-            <span class="bar-note">${fmtBytes(d.avail)} libres sur ${fmtBytes(d.size)}</span>
-          </div>`
-        )
-        .join('')}</div>`;
-
-  const pm2 = data.pm2;
-  $('#server-pm2').innerHTML = pm2.error
-    ? serverError(pm2, 'PM2')
-    : (() => {
-        // Ce qui ne tourne pas d'abord : c'est la seule ligne qu'on cherche quand on ouvre
-        // cette page. Le reste est du contexte.
-        const rows = [...pm2].sort((a, b) =>
-          a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'online' ? 1 : -1
-        );
-        const down = rows.filter((p) => p.status !== 'online').length;
-        return `<h3 class="board-title">PM2 — ${rows.length} process${down ? `, ${down} arrêté(s)` : ''}</h3>
-          <div class="table-wrap"><table class="models">
-            <thead><tr><th>Process</th><th>État</th><th>CPU</th><th>Mémoire</th><th>Redémarrages</th></tr></thead>
-            <tbody>${rows
-              .map(
-                (p) => `<tr>
-                  <td><span class="model-name">${esc(p.name)}</span></td>
-                  <td><span class="srv-state srv-${p.status === 'online' ? 'on' : 'off'}">${esc(p.status)}</span></td>
-                  <td>${p.cpu} %</td>
-                  <td>${fmtBytes(p.memory)}</td>
-                  <td>${p.restarts}</td>
-                </tr>`
-              )
-              .join('')}</tbody>
-          </table></div>`;
-      })();
-
-  const services = data.services;
-  $('#server-services').innerHTML = services.error
-    ? serverError(services, 'Services')
-    : `<h3 class="board-title">Services</h3>
-      <div class="srv-list">${services
-        .map(
-          (s) => `<div class="srv-row" title="${esc(s.description || '')}">
-            <span class="srv-state srv-${s.active ? 'on' : 'off'}">${s.active ? 'actif' : esc(s.activeState || 'arrêté')}</span>
-            <span class="srv-name">${esc(s.label || s.unit)}</span>
-            <span class="srv-role">${esc(s.role || '')}</span>
-            <span class="srv-mem">${s.memory ? fmtBytes(s.memory) : ''}</span>
-          </div>`
-        )
-        .join('')}</div>`;
-
-  const sites = data.sites;
-  $('#server-sites').innerHTML = sites.error
-    ? serverError(sites, 'Sites')
-    : `<h3 class="board-title">Sites — ${sites.filter((s) => s.healthy).length}/${sites.length} en bonne santé</h3>
-      <div class="srv-list">${sites
-        .map(
-          (s) => `<div class="srv-row" title="${esc((s.domains || []).join(', '))}">
-            <span class="srv-state srv-${s.healthy ? 'on' : 'off'}">${s.status || '—'}</span>
-            <span class="srv-name">${esc(s.primaryDomain || s.file)}</span>
-            <span class="srv-role">${esc(s.type || '')}${s.port ? ` · :${s.port}` : ''}</span>
-            <span class="srv-mem">${s.ms ? `${s.ms} ms` : esc(s.error || '')}</span>
-          </div>`
-        )
-        .join('')}</div>`;
-}
-
-async function showServer() {
-  showView('#server-view');
-  state.currentId = null;
-  renderList();
-  $('#server-sub').textContent = 'Lecture…';
-  try {
-    renderServer(await api('GET', '/api/panel'));
-  } catch (err) {
-    $('#server-sub').textContent = '';
-    $('#server-totals').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
-  }
-}
-
-$('#btn-server').addEventListener('click', () => {
-  showServer();
-  closeNav();
+const serverView = window.AgentHubServerView.create({
+  $,
+  api,
+  esc,
+  escAttr,
+  showView,
+  renderConversationList: renderList,
+  closeNav,
 });
-$('#btn-server-refresh').addEventListener('click', () => showServer());
-$('#btn-server-back').addEventListener('click', () => document.body.classList.add('nav-open'));
+serverView.mount();
 
 /** N'affiche qu'une vue. Quatre vues à masquer une par une, c'était devenu à recopier. */
-function showView(selector) {
-  for (const view of VIEWS) $(view).classList.toggle('hidden', view !== selector);
+function showView(selector, options = {}) {
+  if (selector !== '#conv-view') {
+    rememberReadingPosition();
+    parkComposerDraft(state.currentId, Boolean(state.current));
+    // Une vue transverse n'est pas une conversation regardée. Le faire ici garantit le même
+    // contrat aux écrans workspace et corrige aussi la présence des anciennes vues qui ne
+    // remettaient currentId à null qu'après cet appel.
+    state.currentId = null;
+    state.current = null;
+    closeConversationOverlays();
+    if (openController) {
+      openController.abort();
+      openController = null;
+      openGeneration += 1;
+    }
+    openingEvents = [];
+    clearStreams();
+    resyncSerial += 1;
+  }
+  for (const view of document.querySelectorAll('.view')) {
+    view.classList.toggle('hidden', `#${view.id}` !== selector);
+  }
+  // Le titre seul ne suffit pas dans une navigation entièrement iconographique. Un unique
+  // repère visuel et sémantique suit la vue réellement affichée.
+  const sideTarget = {
+    '#workspace-view': '#btn-workspace',
+    '#new-view': '#btn-new',
+    '#usage-view': '#btn-usage',
+    '#triggers-view': '#btn-triggers',
+    '#skills-view': '#btn-skills',
+    '#connections-view': '#btn-connections',
+    '#gallery-view': '#btn-gallery',
+    '#server-view': '#btn-server',
+    '#settings-view': '#btn-settings',
+  }[selector];
+  for (const action of document.querySelectorAll('#sidebar .side-action')) {
+    const active = Boolean(sideTarget && action.matches(sideTarget));
+    action.classList.toggle('active', active);
+    if (active) action.setAttribute('aria-current', 'page');
+    else action.removeAttribute('aria-current');
+  }
   if (selector !== '#connections-view' && typeof stopRemoteBrowserFrames === 'function') {
+    connectionsLoadSeq += 1;
     stopRemoteBrowserFrames();
   }
   // Quitter le fil pour la Consommation, c'est cesser de regarder la conversation : le
   // serveur doit l'apprendre, sinon il retiendrait une notification que plus personne
   // n'attend de voir à l'écran.
   if (typeof sendPresence === 'function') sendPresence();
+
+  const viewName = options.view || BUILTIN_VIEWS[selector] || selector.replace(/^#/, '');
+  if (
+    options.route !== false &&
+    !applyingRoute &&
+    !SOLO &&
+    window.AgentHubNavigation &&
+    viewName !== 'conversation'
+  ) {
+    window.AgentHubNavigation.navigate(
+      { view: viewName, project: options.project, q: options.q },
+      { replace: Boolean(options.replace), silent: true }
+    );
+  }
+  emitNavigation(viewName);
+}
+
+function closeConversationOverlays() {
+  if (typeof window.closeDialog === 'function') window.closeDialog();
+  if (!$('#modal').classList.contains('hidden')) closeModal();
+  if (!$('#plan-modal').classList.contains('hidden')) closePlan();
 }
 
 async function showUsage(month) {
@@ -3597,6 +3783,7 @@ $('#usage-top').addEventListener('click', (e) => {
 let remoteBrowser = null;
 let remoteBrowserTimer = null;
 let remoteBrowserFrameBusy = false;
+let remoteBrowserFrameGeneration = 0;
 let remoteBrowserActions = Promise.resolve();
 let authRequests = [];
 let selectedAuthRequestId = null;
@@ -3605,6 +3792,7 @@ const remoteBrowserHome = $('#remote-browser-shell').parentNode;
 let googleOauthModalOpen = false;
 let connectionModalMode = null;
 let openingAuthRequestId = null;
+let connectionsLoadSeq = 0;
 
 function remoteBrowserError(message) {
   const box = $('#remote-browser-error');
@@ -3654,7 +3842,8 @@ function renderRemoteBrowser(browser) {
   $('#remote-browser-state').classList.toggle('on', running);
   if (running) {
     $('#remote-browser-address').value = remoteBrowser.url || '';
-    startRemoteBrowserFrames();
+    if (remoteBrowserVisible()) startRemoteBrowserFrames();
+    else stopRemoteBrowserFrames();
   } else {
     stopRemoteBrowserFrames();
     $('#remote-browser-frame').removeAttribute('src');
@@ -3673,6 +3862,7 @@ function openGoogleOauthModal(options) {
   $('#google-oauth-browser').append($('#remote-browser-shell'));
   $('#google-oauth-modal').classList.remove('hidden');
   $('#remote-browser-screen').focus();
+  if (remoteBrowser && remoteBrowser.running) startRemoteBrowserFrames();
 }
 
 async function closeGoogleOauthModal(closeBrowser, completeRequest) {
@@ -3682,6 +3872,7 @@ async function closeGoogleOauthModal(closeBrowser, completeRequest) {
   openingAuthRequestId = null;
   $('#google-oauth-modal').classList.add('hidden');
   remoteBrowserHome.insertBefore($('#remote-browser-shell'), $('#remote-browser-error'));
+  if ($('#connections-view').classList.contains('hidden')) stopRemoteBrowserFrames();
   if (closeBrowser && remoteBrowser && remoteBrowser.running) {
     try {
       const complete = wasRequest && completeRequest ? '1' : '0';
@@ -3731,6 +3922,7 @@ function renderAuthRequests(rows) {
 }
 
 async function loadConnections() {
+  const seq = ++connectionsLoadSeq;
   remoteBrowserError('');
   googleError('');
   try {
@@ -3738,11 +3930,16 @@ async function loadConnections() {
       api('GET', '/api/connections/browser'),
       api('GET', '/api/connections/google'),
     ]);
+    // Une réponse tardive après navigation ne doit surtout pas relancer le flux de captures
+    // à 650 ms dans une vue cachée.
+    if (seq !== connectionsLoadSeq || $('#connections-view').classList.contains('hidden')) return;
     renderRemoteBrowser(data.browser);
     renderAuthRequests(data.requests);
     renderGoogle(google.google);
   } catch (err) {
-    remoteBrowserError(err.message);
+    if (seq === connectionsLoadSeq && !$('#connections-view').classList.contains('hidden')) {
+      remoteBrowserError(err.message);
+    }
   }
 }
 
@@ -3753,31 +3950,38 @@ function showConnections() {
   loadConnections();
 }
 
-async function refreshRemoteBrowserFrame() {
-  if (!remoteBrowser || !remoteBrowser.running || remoteBrowserFrameBusy) return;
+function remoteBrowserVisible() {
+  return googleOauthModalOpen || !$('#connections-view').classList.contains('hidden');
+}
+
+async function refreshRemoteBrowserFrame(generation = remoteBrowserFrameGeneration) {
+  if (!remoteBrowser || !remoteBrowser.running || !remoteBrowserVisible() || remoteBrowserFrameBusy) return;
   remoteBrowserFrameBusy = true;
   const img = $('#remote-browser-frame');
   const loading = $('#remote-browser-loading');
   const next = new Image();
   next.onload = () => {
+    if (generation !== remoteBrowserFrameGeneration || !remoteBrowserVisible()) return;
     img.src = next.src;
     loading.classList.add('hidden');
     remoteBrowserFrameBusy = false;
   };
   next.onerror = () => {
-    remoteBrowserFrameBusy = false;
+    if (generation === remoteBrowserFrameGeneration) remoteBrowserFrameBusy = false;
   };
   next.src = `/api/connections/browser/frame?t=${Date.now()}`;
 }
 
 function startRemoteBrowserFrames() {
   if (remoteBrowserTimer) return;
+  const generation = ++remoteBrowserFrameGeneration;
   $('#remote-browser-loading').classList.remove('hidden');
-  refreshRemoteBrowserFrame();
-  remoteBrowserTimer = setInterval(refreshRemoteBrowserFrame, 650);
+  refreshRemoteBrowserFrame(generation);
+  remoteBrowserTimer = setInterval(() => refreshRemoteBrowserFrame(generation), 650);
 }
 
 function stopRemoteBrowserFrames() {
+  remoteBrowserFrameGeneration += 1;
   if (remoteBrowserTimer) clearInterval(remoteBrowserTimer);
   remoteBrowserTimer = null;
   remoteBrowserFrameBusy = false;
@@ -4201,10 +4405,25 @@ function syncTriggerForm() {
   }
 }
 
+let triggerModelProvider = null;
+const triggerModelChoices = new Map();
+function rememberTriggerModel() {
+  if (triggerModelProvider) triggerModelChoices.set(triggerModelProvider, { model: $('#tr-model').value, effort: $('#tr-effort').value });
+}
+function renderTriggerModelPreview() {
+  const description = window.AgentHubModelPicker.describe(trProvider(), $('#tr-model').value, $('#tr-effort').value, state.models);
+  $('#tr-model-preview').textContent = `Lancement · ${description.label} · ${description.effortLabel}`;
+}
 function renderTriggerModels() {
+  rememberTriggerModel();
   const provider = trProvider();
+  triggerModelProvider = provider;
   $('#tr-model').innerHTML = modelOptionsHtml(provider);
+  const saved = triggerModelChoices.get(provider);
+  if (saved && [...$('#tr-model').options].some((option) => option.value === saved.model)) $('#tr-model').value = saved.model;
   setEffortSelect($('#tr-effort'), provider, $('#tr-model').value, false);
+  if (saved && [...$('#tr-effort').options].some((option) => option.value === saved.effort)) $('#tr-effort').value = saved.effort;
+  renderTriggerModelPreview();
 }
 
 async function showTriggers() {
@@ -4260,7 +4479,10 @@ $('#tr-freq').addEventListener('change', syncTriggerForm);
 
 $('#tr-model').addEventListener('change', () => {
   setEffortSelect($('#tr-effort'), trProvider(), $('#tr-model').value, true);
+  rememberTriggerModel();
+  renderTriggerModelPreview();
 });
+$('#tr-effort').addEventListener('change', () => { rememberTriggerModel(); renderTriggerModelPreview(); });
 
 $('#tr-provider-pick').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-provider]');
@@ -4351,7 +4573,7 @@ $('#triggers-list').addEventListener('click', async (e) => {
       await navigator.clipboard.writeText(url);
       toast("URL du webhook copiée");
     } catch {
-      // `clipboard` demande un contexte sécurisé, et l'app est souvent servie en http :
+      // `clipboard` demande un contexte sécurisé, et l'app peut être servie en http :
       // le refus est le cas normal ici, pas l'exception. On sélectionne le texte pour que la
       // copie manuelle tienne en un raccourci.
       const code = copy.closest('.hook-url').querySelector('[data-hook-url]');
@@ -4423,8 +4645,15 @@ async function refreshAccounts(refresh) {
   renderLimits();
 }
 
+let listRequestSeq = 0;
+let listAppliedSeq = 0;
 async function refreshList() {
+  const seq = ++listRequestSeq;
   const data = await api('GET', '/api/conversations');
+  // Une réponse plus récente déjà appliquée prime. Une requête plus récente seulement
+  // démarrée (et susceptible d'échouer) ne doit pas faire jeter un résultat encore utile.
+  if (seq < listAppliedSeq) return;
+  listAppliedSeq = seq;
   state.convs = data.conversations;
   if (data.folders) state.folders = data.folders;
   renderList();
@@ -4808,7 +5037,7 @@ function effortOptionsHtml(provider, modelValue) {
   return effortList(provider, modelValue)
     .map((effort) => {
       const title = effort.title ? ` title="${escAttr(effort.title)}"` : '';
-      return `<option value="${escAttr(effort.value)}"${title}>${esc(effort.label)}</option>`;
+      return `<option value="${escAttr(effort.value)}"${title}>${esc(effort.value ? effort.label : 'Réglage du CLI')}</option>`;
     })
     .join('');
 }
@@ -4843,11 +5072,11 @@ function modelOptionsHtml(provider, { custom = false } = {}) {
     group.items.push(model);
   }
   return (
-    loose.map(modelOptionHtml).join('') +
+    loose.map((entry) => modelOptionHtml({ ...entry, label: window.AgentHubModelPicker.describe(provider, entry.value, '', state.models).label })).join('') +
     groups
       .map(
         (group) =>
-          `<optgroup label="${escAttr(group.label)}">${group.items.map(modelOptionHtml).join('')}</optgroup>`
+          `<optgroup label="${escAttr(group.label)}">${group.items.map((entry) => modelOptionHtml({ ...entry, label: window.AgentHubModelPicker.describe(provider, entry.value, '', state.models).label })).join('')}</optgroup>`
       )
       .join('') +
     (custom ? `<option value="${CUSTOM}">Autre… (saisie libre)</option>` : '')
@@ -4869,8 +5098,39 @@ function renderConvModel(conv) {
   select.title = (match && match.note) || 'Modèle de cette conversation, pour le prochain message';
 }
 
+let newModelProvider = null;
+const newModelChoices = PREFS.read('modelChoices', {}) || {};
+function rememberNewModelChoice(provider = newModelProvider) {
+  if (!provider) return;
+  newModelChoices[provider] = {
+    model: $('#model').value === CUSTOM ? $('#model-custom').value.trim() : $('#model').value,
+    custom: $('#model').value === CUSTOM,
+    effort: $('#effort').value,
+  };
+  PREFS.write('modelChoices', newModelChoices);
+}
+
+function renderNewModelPreview() {
+  const model = currentModel();
+  if ($('#model').value === CUSTOM && !model) {
+    $('#new-model-preview').textContent = 'Premier message · identifiant personnalisé requis';
+    return;
+  }
+  const description = window.AgentHubModelPicker.describe(state.provider, model, $('#effort').value, state.models);
+  $('#new-model-preview').textContent = `Premier message · ${description.label} · ${description.effortLabel}`;
+}
+
 function renderModels() {
+  rememberNewModelChoice();
+  newModelProvider = state.provider;
   $('#model').innerHTML = modelOptionsHtml(state.provider, { custom: true });
+  const savedChoice = newModelChoices[state.provider];
+  if (savedChoice) {
+    const known = modelList(state.provider).some((entry) => entry.value === savedChoice.model);
+    $('#model').value = savedChoice.custom || !known ? CUSTOM : savedChoice.model || '';
+    $('#model-custom').value = savedChoice.model || '';
+  } else $('#model-custom').value = '';
+  $('#effort').value = '';
   // L'option navigateur n'existe que là où elle est vraie : le service MCP doit être
   // configuré, et le fournisseur doit savoir recevoir une config MCP à l'appel. Décochée
   // en même temps que cachée, sinon un changement de fournisseur laisserait une case
@@ -4886,12 +5146,17 @@ function renderModels() {
     ? "Cet agent a le navigateur en permanence : il est inscrit dans sa configuration globale, hors de l'app."
     : "Il pourra ouvrir une page, cliquer, remplir un formulaire, lire la console et prendre des captures — y compris sur tes projets en local. Les captures apparaissent dans le fil.";
   syncModelField();
+  if (savedChoice && [...$('#effort').options].some((entry) => entry.value === savedChoice.effort)) {
+    $('#effort').value = savedChoice.effort;
+  }
+  rememberNewModelChoice();
+  renderNewModelPreview();
 }
 
-function syncModelField() {
+function syncModelField(event) {
   const custom = $('#model').value === CUSTOM;
   $('#model-custom').classList.toggle('hidden', !custom);
-  if (custom) $('#model-custom').focus();
+  if (custom && event) $('#model-custom').focus();
   const match = custom
     ? null
     : modelList(state.provider).find((model) => model.value === $('#model').value);
@@ -4902,9 +5167,13 @@ function syncModelField() {
   note.textContent = text;
   note.classList.toggle('hidden', !text);
   setEffortSelect($('#effort'), state.provider, custom ? null : $('#model').value, true);
+  rememberNewModelChoice();
+  renderNewModelPreview();
 }
 
 $('#model').addEventListener('change', syncModelField);
+$('#model-custom').addEventListener('input', () => { rememberNewModelChoice(); renderNewModelPreview(); });
+$('#effort').addEventListener('change', () => { rememberNewModelChoice(); renderNewModelPreview(); });
 
 function currentCwd() {
   const value = $('#project').value;
@@ -4954,6 +5223,7 @@ $('#btn-create').addEventListener('click', async () => {
   $('#new-error').textContent = '';
   $('#btn-create').disabled = true;
   try {
+    if ($('#model').value === CUSTOM && !currentModel()) throw new Error('Renseigne un identifiant de modèle, ou choisis le défaut du CLI.');
     const data = await api('POST', '/api/conversations', {
       provider: state.provider,
       cwd,
@@ -5435,8 +5705,23 @@ async function openSavedPrompts(box) {
 $('#btn-saved').addEventListener('click', () => openSavedPrompts($('#prompt')));
 $('#btn-saved-new').addEventListener('click', () => openSavedPrompts($('#new-prompt')));
 
+const sendingAfterModelSave = new Set();
 async function send() {
+  const id = state.currentId;
+  if (!id || sendingAfterModelSave.has(id)) return;
+  sendingAfterModelSave.add(id);
+  try {
+    await conversationModelSettings.wait(id);
+    if (state.currentId !== id || !state.current) return;
+    await sendWithModelReady();
+  } catch (error) {
+    toastError(`Envoi conservé en brouillon : le choix du modèle n’a pas été enregistré. ${error.message}`);
+  } finally { sendingAfterModelSave.delete(id); }
+}
+
+async function sendWithModelReady() {
   if (!state.currentId) return;
+  const convId = state.currentId;
   const box = $('#prompt');
   const ready = pendingImages.filter((img) => img.dataUrl);
 
@@ -5451,26 +5736,32 @@ async function send() {
   if (!text) return;
 
   const images = ready.map(({ name, dataUrl }) => ({ name, dataUrl }));
+  const submittedImages = pendingImages;
   const asGoal = goalArmed;
   box.value = '';
   autosizePrompt();
-  clearAttachments();
+  pendingImages = [];
+  renderAttachments();
+  // Le message soumis n'est plus un brouillon. Si l'envoi échoue, le catch le recrée avec
+  // son texte et ses blobs ; la file sérialisée de drafts.js préserve cet ordre.
+  if (window.AgentHubDrafts) window.AgentHubDrafts.remove(convId);
 
   try {
     if (asGoal) {
-      await api('POST', `/api/conversations/${state.currentId}/goal`, {
+      await api('POST', `/api/conversations/${convId}/goal`, {
         objective: text,
         images,
         rounds: Number($('#goal-rounds').value) || GOAL_ROUNDS_DEFAULT,
       });
       armGoal(false);
     } else {
-      await api('POST', `/api/conversations/${state.currentId}/messages`, { prompt: text, images });
+      await api('POST', `/api/conversations/${convId}/messages`, { prompt: text, images });
     }
+    for (const image of submittedImages) URL.revokeObjectURL(image.objectUrl);
   } catch (err) {
-    // Message perdu si on ne le rend pas : on le remet dans le champ.
-    box.value = text;
-    autosizePrompt();
+    // La conversation a pu changer pendant le réseau : le message retourne à son propre
+    // brouillon, jamais dans le composeur actuellement affiché.
+    restoreFailedSubmission(convId, text, submittedImages);
     toastError(err.message);
   }
 }
@@ -5492,6 +5783,7 @@ $('#btn-stop').addEventListener('click', async () => {
 // remplacera à sa prochaine mise à jour. Les montrer quand même donne l'image complète.
 
 const SCOPE_LABEL = { global: 'globale', project: 'projet' };
+let skillsViewRequestSeq = 0;
 
 function skillRow(s) {
   const other = s.scope === 'global' ? 'project' : 'global';
@@ -5559,18 +5851,28 @@ function skillsProject() {
 }
 
 async function loadSkillsView() {
+  const seq = ++skillsViewRequestSeq;
   const list = $('#skills-list');
   list.innerHTML = '<div class="empty">Lecture des skills…</div>';
+  const cwd = skillsProject();
   try {
-    const cwd = skillsProject();
     const [inv, cat] = await Promise.all([
       api('GET', `/api/skills/inventory${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`),
       // Claude porte le catalogue le plus complet, et Grok lit les mêmes dossiers.
       api('GET', '/api/skills?provider=claude'),
     ]);
+    if (
+      seq !== skillsViewRequestSeq ||
+      cwd !== skillsProject() ||
+      $('#skills-view').classList.contains('hidden')
+    ) return;
     renderSkillsView(inv, cat.skills);
   } catch (err) {
-    list.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+    if (
+      seq === skillsViewRequestSeq &&
+      cwd === skillsProject() &&
+      !$('#skills-view').classList.contains('hidden')
+    ) list.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
   }
 }
 
@@ -5881,8 +6183,11 @@ function renderPlanList(list) {
       .join('');
 }
 
+let planConvId = null;
 async function openPlan() {
   if (!state.currentId) return;
+  const convId = state.currentId;
+  planConvId = convId;
   $('#plan-error').textContent = '';
   // Le message déjà écrit dans le composeur est le candidat évident : on le reprend, puces
   // reconverties — c'est bien ce texte-là qui partira.
@@ -5894,13 +6199,16 @@ async function openPlan() {
   $('#plan-text').focus();
   try {
     const data = await api('GET', '/api/planned');
-    renderPlanList((data.planned || []).filter((p) => p.convId === state.currentId));
+    if (planConvId === convId && state.currentId === convId) {
+      renderPlanList((data.planned || []).filter((p) => p.convId === convId));
+    }
   } catch {
     /* la liste est un confort : son absence n'empêche pas de planifier */
   }
 }
 
 function closePlan() {
+  planConvId = null;
   $('#plan-modal').classList.add('hidden');
 }
 
@@ -5914,9 +6222,13 @@ $('#plan-list').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-plan-cancel]');
   if (!btn) return;
   try {
+    const convId = planConvId;
+    if (!convId) return;
     await api('DELETE', `/api/planned/${btn.dataset.planCancel}`);
     const data = await api('GET', '/api/planned');
-    renderPlanList((data.planned || []).filter((p) => p.convId === state.currentId));
+    if (planConvId === convId && state.currentId === convId) {
+      renderPlanList((data.planned || []).filter((p) => p.convId === convId));
+    }
   } catch (err) {
     $('#plan-error').textContent = err.message;
   }
@@ -5930,14 +6242,20 @@ $('#plan-ok').addEventListener('click', async () => {
   if (!$('#plan-at').value) return void (err.textContent = 'Choisis la date et l’heure.');
 
   $('#plan-ok').disabled = true;
+  const convId = planConvId;
+  if (!convId) {
+    $('#plan-ok').disabled = false;
+    return;
+  }
   try {
-    const data = await api('POST', `/api/conversations/${state.currentId}/planned`, {
+    const data = await api('POST', `/api/conversations/${convId}/planned`, {
       prompt,
       // `datetime-local` rend l'heure murale, sans fuseau : c'est bien ce qu'on veut, le
       // serveur tourne sur le même.
       runAt: $('#plan-at').value,
       mode: planMode,
     });
+    if (planConvId !== convId || state.currentId !== convId) return;
     renderPlanList(data.pending);
     // Le message est parti dans la file du serveur : le laisser dans le composeur ferait
     // croire qu'il reste à envoyer.
@@ -5967,12 +6285,19 @@ $('#plan-ok').addEventListener('click', async () => {
 /** Skills du fournisseur courant, chargées à l'ouverture d'une conversation. */
 async function loadSkills(provider) {
   if (!provider || state.skillsOf === provider) return;
+  state.skills = [];
+  state.skillsOf = null;
   try {
     const data = await api('GET', `/api/skills?provider=${encodeURIComponent(provider)}`);
+    if (!state.current || state.current.provider !== provider) {
+      return;
+    }
     state.skills = data.skills || [];
     state.skillsOf = provider;
   } catch {
-    state.skills = [];
+    if (state.current && state.current.provider === provider) {
+      state.skills = [];
+    }
   }
 }
 
@@ -6163,6 +6488,7 @@ $('#prompt').addEventListener('input', () => {
   autosizePrompt();
   renderSkillMenu();
   renderSkillBadge();
+  scheduleVisibleDraftPersistence();
 });
 // Le menu suit le curseur : cliquer ailleurs dans le champ doit le refermer.
 $('#prompt').addEventListener('click', renderSkillMenu);
@@ -6204,18 +6530,20 @@ const ACCEPT_FILES =
   'image/png,image/jpeg,image/webp,image/gif,.md,.markdown,.json,text/markdown,application/json';
 
 let editingQueueId = null;
+let queueEditText = '';
 let queueImageTarget = null;
 
 function queueCard(entry, index) {
   const images = (entry.images || []).map((img) => queueThumb(entry, img)).join('');
 
   const editing = editingQueueId === entry.id;
+  const editText = editing ? queueEditText : entry.text;
   return `<div class="queue-card${editing ? ' editing' : ''}" data-qcard="${entry.id}" draggable="true" data-index="${index}">
     <span class="queue-grip" title="Glisser pour réordonner"><svg class="icon"><use href="#i-grip"/></svg></span>
     <div class="queue-main">
       <div class="queue-text">${esc(entry.text)}</div>
       <div class="queue-edit">
-        <textarea data-qedit="${entry.id}">${esc(entry.text)}</textarea>
+        <textarea data-qedit="${entry.id}">${esc(editText)}</textarea>
         <div class="queue-edit-foot">
           <button class="queue-btn" data-qsave="${entry.id}"><svg class="icon"><use href="#i-check"/></svg><span>Enregistrer</span></button>
           <button class="queue-btn" data-qcancel="${entry.id}"><svg class="icon"><use href="#i-close"/></svg><span>Annuler</span></button>
@@ -6235,6 +6563,10 @@ function queueCard(entry, index) {
 function renderQueue() {
   const box = $('#queue');
   const queue = state.queue || [];
+  if (editingQueueId && !queue.some((entry) => entry.id === editingQueueId)) {
+    editingQueueId = null;
+    queueEditText = '';
+  }
   if (!queue.length) {
     box.innerHTML = '';
     box.classList.add('hidden');
@@ -6246,9 +6578,11 @@ function renderQueue() {
     queue.map(queueCard).join('');
 }
 
-async function queueApi(method, path, body) {
-  const data = await api(method, `/api/conversations/${state.currentId}/queue${path}`, body);
-  if (data.queued) {
+async function queueApi(method, path, body, targetConvId = state.currentId) {
+  const convId = targetConvId;
+  if (!convId) return {};
+  const data = await api(method, `/api/conversations/${encodeURIComponent(convId)}/queue${path}`, body);
+  if (data.queued && state.currentId === convId && state.current) {
     state.queue = data.queued;
     renderQueue();
   }
@@ -6283,7 +6617,8 @@ $('#queue').addEventListener('click', async (e) => {
 
     const send = hit('qsend');
     if (send) {
-      await api('POST', `/api/conversations/${state.currentId}/queue/${send}/promote`);
+      const convId = state.currentId;
+      if (convId) await api('POST', `/api/conversations/${encodeURIComponent(convId)}/queue/${send}/promote`);
       return;
     }
 
@@ -6296,6 +6631,7 @@ $('#queue').addEventListener('click', async (e) => {
     const edit = hit('qeditbtn');
     if (edit) {
       editingQueueId = edit;
+      queueEditText = ((state.queue || []).find((entry) => entry.id === edit) || {}).text || '';
       renderQueue();
       const area = document.querySelector(`[data-qedit="${edit}"]`);
       if (area) {
@@ -6308,6 +6644,7 @@ $('#queue').addEventListener('click', async (e) => {
     const cancel = hit('qcancel');
     if (cancel) {
       editingQueueId = null;
+      queueEditText = '';
       renderQueue();
       return;
     }
@@ -6317,19 +6654,31 @@ $('#queue').addEventListener('click', async (e) => {
       const area = document.querySelector(`[data-qedit="${save}"]`);
       const text = area ? area.value.trim() : '';
       if (!text) return;
-      editingQueueId = null;
-      await queueApi('PATCH', `/${save}`, { text });
+      const convId = state.currentId;
+      await queueApi('PATCH', `/${save}`, { text }, convId);
+      if (state.currentId === convId && editingQueueId === save) {
+        editingQueueId = null;
+        queueEditText = '';
+        renderQueue();
+      }
       return;
     }
 
     const addImg = hit('qaddimg');
     if (addImg) {
-      queueImageTarget = addImg;
+      queueImageTarget = { convId: state.currentId, queueId: addImg };
       $('#queue-file-input').click();
     }
   } catch (err) {
     toastError(err.message);
   }
+});
+
+// Un événement websocket peut repeindre la file pendant l'édition. Le texte local reste la
+// source jusqu'à Enregistrer ou Annuler, au lieu d'être remplacé par la version serveur.
+$('#queue').addEventListener('input', (e) => {
+  const area = e.target.closest('[data-qedit]');
+  if (area && area.dataset.qedit === editingQueueId) queueEditText = area.value;
 });
 
 // Ajout d'images à un message déjà en attente
@@ -6345,6 +6694,8 @@ queueFileInput.addEventListener('change', async (e) => {
   const files = [...e.target.files];
   e.target.value = '';
   if (!files.length || !queueImageTarget) return;
+  const target = queueImageTarget;
+  queueImageTarget = null;
   try {
     const addImages = await Promise.all(
       files.map(
@@ -6357,11 +6708,11 @@ queueFileInput.addEventListener('change', async (e) => {
           })
       )
     );
-    await queueApi('PATCH', `/${queueImageTarget}`, { addImages });
+    // La lecture peut durer plusieurs secondes sur téléphone. Le fil cible est celui du
+    // clic initial, même si l'utilisateur a ouvert une autre conversation entre-temps.
+    await queueApi('PATCH', `/${target.queueId}`, { addImages }, target.convId);
   } catch (err) {
     toastError(err.message);
-  } finally {
-    queueImageTarget = null;
   }
 });
 
@@ -6422,33 +6773,186 @@ const MAX_IMAGES = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-const TEXT_EXTS = new Set(['md', 'markdown', 'json']);
 
 let pendingImages = [];
 let attachSeq = 0;
+const composerDrafts = new Map();
+let draftLoadGeneration = 0;
+let draftSaveTimer = null;
 
-function fileExtOf(name) {
-  const match = /\.([a-z0-9]+)$/i.exec(name || '');
-  return match ? match[1].toLowerCase() : '';
+function persistComposerDraft(convId, draft) {
+  if (!convId || !window.AgentHubDrafts) return;
+  window.AgentHubDrafts.save(convId, draft).catch(() => {});
 }
 
-function isTextName(name) {
-  return TEXT_EXTS.has(fileExtOf(name));
+function scheduleVisibleDraftPersistence() {
+  clearTimeout(draftSaveTimer);
+  const convId = state.currentId;
+  if (!convId || !state.current) return;
+  draftSaveTimer = setTimeout(() => {
+    if (state.currentId !== convId || !state.current) return;
+    persistComposerDraft(convId, { text: $('#prompt').value, images: pendingImages });
+  }, 450);
 }
 
-function attachmentIsText(att) {
-  if (!att) return false;
-  if (att.kind === 'text') return true;
-  if (att.kind === 'image') return false;
-  return isTextName(att.name) || isTextName(att.url);
+function applyComposerDraft(draft) {
+  if (!draft) return;
+  const box = $('#prompt');
+  const draftText = String(draft.text || '');
+  const visibleText = box.value;
+  const sameText =
+    draftText.replace(/\r\n/g, '\n').trimEnd() ===
+    visibleText.replace(/\r\n/g, '\n').trimEnd();
+  // Chrome restaure parfois lui-même la valeur d'un textarea au rechargement, avant que le
+  // brouillon IndexedDB arrive. Une fusion aveugle produisait alors « texte\n\ntexte ».
+  // Garder la valeur visible rend aussi un éventuel second callback de restauration idempotent.
+  if (!sameText) {
+    box.value = visibleText.trim()
+      ? `${draftText.replace(/\s+$/, '')}\n\n${visibleText}`.replace(/^\n\n/, '')
+      : draftText;
+  }
+  const visibleImages = [...pendingImages];
+  const restoredImages = [];
+  for (const image of draft.images || []) {
+    const duplicate =
+      image.dataUrl &&
+      visibleImages.some(
+        (visible) =>
+          (!visible.draftSignature ||
+            !image.draftSignature ||
+            visible.draftSignature === image.draftSignature) &&
+          visible.dataUrl === image.dataUrl &&
+          visible.kind === image.kind &&
+          visible.name === image.name
+      );
+    if (duplicate) {
+      // La seconde matérialisation possède sa propre blob URL : elle ne doit pas fuir même
+      // si la pièce jointe correspondante est déjà dans le composeur.
+      URL.revokeObjectURL(image.objectUrl);
+    } else {
+      restoredImages.push(image);
+    }
+  }
+  for (const image of [...visibleImages, ...restoredImages]) {
+    const match = /^att(\d+)$/.exec(image.id || '');
+    if (match) attachSeq = Math.max(attachSeq, Number(match[1]));
+  }
+  const ids = new Set(visibleImages.map((image) => image.id));
+  for (const image of restoredImages) {
+    if (!image.id || ids.has(image.id)) image.id = `att${(attachSeq += 1)}`;
+    ids.add(image.id);
+  }
+  const available = Math.max(0, MAX_IMAGES - visibleImages.length);
+  const kept = restoredImages.slice(0, available);
+  const dropped = restoredImages.slice(available);
+  for (const image of dropped) URL.revokeObjectURL(image.objectUrl);
+  pendingImages = [...kept, ...visibleImages];
+  autosizePrompt();
+  renderAttachments();
+  if (dropped.length) {
+    toastError(`${dropped.length} pièce(s) jointe(s) du brouillon n’ont pas été restaurées (maximum ${MAX_IMAGES}).`);
+  }
+  renderSkillMenu();
+  renderSkillBadge();
+  scheduleVisibleDraftPersistence();
 }
 
-function textBadge(name) {
-  const ext = fileExtOf(name);
-  if (ext === 'md' || ext === 'markdown') return 'MD';
-  if (ext === 'json') return 'JSON';
-  return (ext || 'FILE').toUpperCase().slice(0, 4);
+function parkComposerDraft(convId, visibleIsAuthoritative = false) {
+  if (!convId) return;
+  draftLoadGeneration += 1;
+  clearTimeout(draftSaveTimer);
+  const box = $('#prompt');
+  const text = box.value;
+  if (text.trim() || pendingImages.length) {
+    const draft = { text, images: pendingImages };
+    composerDrafts.set(convId, draft);
+    persistComposerDraft(convId, draft);
+  } else if (visibleIsAuthoritative) {
+    // Une conversation réellement montée avec un composeur vide prime sur une entrée
+    // résiduelle : la restaurer après le GET ressusciterait un texte déjà effacé.
+    discardComposerDraft(convId);
+  }
+  pendingImages = [];
+  box.value = '';
+  autosizePrompt();
+  renderAttachments();
+  $('#skill-menu').classList.add('hidden');
+  $('#skill-badge').classList.add('hidden');
 }
+
+function restoreComposerDraft(convId) {
+  const draft = composerDrafts.get(convId);
+  if (draft) {
+    composerDrafts.delete(convId);
+    applyComposerDraft(draft);
+    return;
+  }
+  if (!window.AgentHubDrafts) return;
+  const generation = ++draftLoadGeneration;
+  window.AgentHubDrafts.load(convId).then((persisted) => {
+    if (!persisted) return;
+    if (generation !== draftLoadGeneration || state.currentId !== convId || !state.current) {
+      for (const image of persisted.images || []) URL.revokeObjectURL(image.objectUrl);
+      return;
+    }
+    applyComposerDraft(persisted);
+  });
+}
+
+function restoreFailedSubmission(convId, text, images) {
+  if (state.currentId === convId && state.current) {
+    const box = $('#prompt');
+    box.value = box.value.trim() ? `${text}\n\n${box.value}` : text;
+    pendingImages = [...images, ...pendingImages];
+    autosizePrompt();
+    renderAttachments();
+    persistComposerDraft(convId, { text: box.value, images: pendingImages });
+    return;
+  }
+  const draft = composerDrafts.get(convId) || { text: '', images: [] };
+  draft.text = draft.text.trim() ? `${text}\n\n${draft.text}` : text;
+  draft.images = [...images, ...(draft.images || [])];
+  composerDrafts.set(convId, draft);
+  persistComposerDraft(convId, draft);
+}
+
+function discardComposerDraft(convId) {
+  const draft = composerDrafts.get(convId);
+  if (draft) for (const image of draft.images || []) URL.revokeObjectURL(image.objectUrl);
+  composerDrafts.delete(convId);
+  if (window.AgentHubDrafts) window.AgentHubDrafts.remove(convId).catch(() => {});
+}
+
+// localStorage est écrit synchroniquement par drafts.js : même si le navigateur suspend la
+// transaction IndexedDB à la fermeture mobile, le texte du composeur reste récupérable.
+window.addEventListener('pagehide', () => {
+  clearTimeout(draftSaveTimer);
+  if (state.currentId && state.current && window.AgentHubDrafts) {
+    window.AgentHubDrafts.save(state.currentId, {
+      text: $('#prompt').value,
+      images: pendingImages,
+    });
+  }
+  rememberReadingPosition();
+});
+
+let lastDraftErrorAt = 0;
+window.addEventListener('agenthub:draft-error', (event) => {
+  const now = Date.now();
+  if (now - lastDraftErrorAt < 8_000) return;
+  lastDraftErrorAt = now;
+  const missing = Number(event.detail && event.detail.missing) || 0;
+  const missingLabel = missing
+    ? `${missing} pièce${missing > 1 ? 's' : ''} jointe${missing > 1 ? 's' : ''}`
+    : 'Certaines pièces jointes';
+  const message =
+    event.detail && event.detail.operation === 'texte'
+      ? 'Le brouillon n’a pas pu être sauvegardé sur cet appareil. Copie le texte avant de quitter.'
+      : event.detail && event.detail.operation === 'restauration-incomplete'
+        ? `${missingLabel} du brouillon ${missing === 1 ? 'n’a' : 'n’ont'} pas pu être restaurée${missing === 1 ? '' : 's'}. Le texte reste sauvegardé.`
+      : 'Les pièces jointes du brouillon n’ont pas pu être conservées sur cet appareil. Le texte reste sauvegardé.';
+  toastError(message);
+});
 
 function attachmentKindOf(file) {
   if (file && IMAGE_MIME.includes(file.type)) return 'image';
@@ -6465,15 +6969,6 @@ function attachmentFallback(files) {
 
 function removeButton(id) {
   return `<span class="att-x" data-remove="${id}" role="button" tabindex="0" title="Retirer"><svg class="icon"><use href="#i-close"/></svg></span>`;
-}
-
-/** Pastille d'un markdown ou d'un JSON déjà enregistré, dans le fil. Une seule ligne : le message est en pre-wrap. */
-function renderStoredAttachment(att) {
-  if (attachmentIsText(att)) {
-    const badge = textBadge(att.name || att.url);
-    return `<a class="msg-file" href="${esc(att.url)}" target="_blank" rel="noopener" title="${esc(att.name)}"><span class="msg-file-ext">${esc(badge)}</span><span class="msg-file-name">${esc(att.name)}</span></a>`;
-  }
-  return `<button data-image="${esc(att.url)}" data-name="${esc(att.name)}" title="${esc(att.name)}"><img src="${esc(att.url)}" alt="${esc(att.name)}" loading="lazy"></button>`;
 }
 
 /** Vignette dans la file d'attente. Le retrait passe par la même croix que les images. */
@@ -6498,12 +6993,6 @@ function renderAttachments(error) {
     .join('');
   box.innerHTML = items + (error ? `<div class="att-err">${esc(error)}</div>` : '');
   box.classList.toggle('hidden', !items && !error);
-}
-
-function clearAttachments() {
-  pendingImages.forEach((img) => URL.revokeObjectURL(img.objectUrl));
-  pendingImages = [];
-  renderAttachments();
 }
 
 function addImageFiles(files) {
@@ -6541,14 +7030,35 @@ function addImageFiles(files) {
     const reader = new FileReader();
     reader.onload = () => {
       entry.dataUrl = reader.result;
+      if (pendingImages.includes(entry) && state.currentId && state.current) {
+        clearTimeout(draftSaveTimer);
+        // Le data URL est prêt : l'écrire tout de suite réduit la fenêtre où un pagehide ne
+        // pourrait conserver que son manifeste, sans le blob correspondant dans IndexedDB.
+        persistComposerDraft(state.currentId, {
+          text: $('#prompt').value,
+          images: pendingImages,
+        });
+      }
+      for (const [convId, draft] of composerDrafts) {
+        if ((draft.images || []).includes(entry)) persistComposerDraft(convId, draft);
+      }
     };
     reader.onerror = () => {
-      renderAttachments(`${entry.name} : lecture impossible.`);
+      const visible = pendingImages.includes(entry);
       pendingImages = pendingImages.filter((i) => i !== entry);
+      for (const draft of composerDrafts.values()) {
+        draft.images = (draft.images || []).filter((i) => i !== entry);
+      }
+      URL.revokeObjectURL(entry.objectUrl);
+      if (visible) renderAttachments(`${entry.name} : lecture impossible.`);
+      else toastError(`${entry.name} : lecture impossible.`);
+      if (visible) scheduleVisibleDraftPersistence();
+      for (const [convId, draft] of composerDrafts) persistComposerDraft(convId, draft);
     };
     reader.readAsDataURL(file);
   }
   renderAttachments(error);
+  scheduleVisibleDraftPersistence();
 }
 
 $('#attachments').addEventListener('click', (e) => {
@@ -6560,6 +7070,7 @@ $('#attachments').addEventListener('click', (e) => {
     if (img) URL.revokeObjectURL(img.objectUrl);
     pendingImages = pendingImages.filter((i) => i.id !== id);
     renderAttachments();
+    scheduleVisibleDraftPersistence();
     return;
   }
   const thumb = e.target.closest('[data-att]');
@@ -6638,15 +7149,17 @@ function svgToPng(blob) {
 }
 
 /** Récupère une image de la galerie et la joint comme si elle venait du disque. */
-async function attachFromGallery(imageId, label) {
+async function attachFromGallery(imageId, label, stillCurrent = () => true) {
   const res = await fetch(`/api/gallery/images/${imageId}/file`);
   if (!res.ok) throw new Error('Image introuvable');
 
   let blob = await res.blob();
   if (blob.type.includes('svg')) blob = await svgToPng(blob);
+  if (!stillCurrent()) return false;
 
   const ext = (blob.type.split('/')[1] || 'png').split('+')[0];
   addImageFiles([new File([blob], `${label || 'galerie'}.${ext}`, { type: blob.type })]);
+  return true;
 }
 
 function galleryPickerBody(projects, current, images) {
@@ -6684,9 +7197,11 @@ function galleryPickerBody(projects, current, images) {
 }
 
 async function openGalleryPicker() {
-  openModal('Depuis la galerie', '<p>Chargement…</p>', '', null);
+  const generation = openModal('Depuis la galerie', '<p>Chargement…</p>', '', null);
+  let loadSeq = 0;
 
   const load = async (projectId) => {
+    const seq = ++loadSeq;
     const { projects } = await api('GET', '/api/gallery');
     const pick = projects.some((p) => p.id === projectId)
       ? projectId
@@ -6697,26 +7212,49 @@ async function openGalleryPicker() {
         )
       : [];
 
+    if (modalGeneration !== generation || seq !== loadSeq) return;
+
     $('#modal-body').innerHTML = galleryPickerBody(projects, pick, images);
 
     const select = $('#pick-project');
-    if (select) select.addEventListener('change', () => load(select.value));
+    if (select) {
+      select.addEventListener('change', () => {
+        load(select.value).catch((err) => {
+          if (modalGeneration === generation) {
+            const slot = $('#modal-error');
+            if (slot) {
+              slot.textContent = err.message;
+              slot.classList.remove('hidden');
+            }
+          }
+        });
+      });
+    }
   };
 
   try {
-    await load(PREFS.read(GAL.projectKey, null));
+    await load(PREFS.read('galleryProject', null));
   } catch (err) {
-    $('#modal-body').innerHTML = `<div class="modal-warn">${esc(err.message)}</div>`;
+    if (modalGeneration === generation) {
+      $('#modal-body').innerHTML = `<div class="modal-warn">${esc(err.message)}</div>`;
+    }
   }
 }
 
 $('#modal-body').addEventListener('click', async (e) => {
   const pick = e.target.closest('[data-pick]');
   if (!pick) return;
+  const convId = state.currentId;
+  const generation = modalGeneration;
   try {
-    await attachFromGallery(pick.dataset.pick, pick.dataset.label);
-    closeModal();
+    const attached = await attachFromGallery(
+      pick.dataset.pick,
+      pick.dataset.label,
+      () => state.currentId === convId && modalGeneration === generation
+    );
+    if (attached && modalGeneration === generation) closeModal();
   } catch (err) {
+    if (modalGeneration !== generation) return;
     const slot = $('#modal-error');
     if (slot) {
       slot.textContent = err.message;
@@ -6757,654 +7295,42 @@ composer.addEventListener('drop', (e) => {
   addImageFiles(e.dataTransfer.files);
 });
 
-// --- Galerie ----------------------------------------------------------------
-//
-// Indépendante des conversations : ses projets ne sont pas les dossiers de la sidebar.
-// Une description envoyée à plusieurs agents forme un lot, affiché sur une ligne pour
-// que la comparaison soit immédiate.
+// --- Galerie --------------------------------------------------------------
 
-const GAL = {
-  projectKey: 'galleryProject',
-  agentsKey: 'galleryAgents',
-};
-
-function galSelectedAgents() {
-  return [...document.querySelectorAll('#gal-agents .gal-agent.on')].map((b) => b.dataset.agent);
-}
-
-function renderGalAgents() {
-  const chosen = new Set(PREFS.read(GAL.agentsKey, usableProviders()));
-  $('#gal-agents').innerHTML = usableProviders()
-    .map((p) => {
-      const on = chosen.has(p) ? ' on' : '';
-      return `<button class="gal-agent${on}" data-agent="${p}" title="${esc(
-        PROVIDER_LABELS[p] || p
-      )}">${providerIcon(p)}<span>${esc(PROVIDER_LABELS[p] || p)}</span></button>`;
-    })
-    .join('');
-}
-
-function galImageCard(img) {
-  const name = `${PROVIDER_LABELS[img.provider] || img.provider}`;
-  const cost = img.costUsd ? `<span class="gal-cost">${money(img.costUsd)}</span>` : '';
-
-  let body;
-  if (img.state === 'working') {
-    body = '<div class="gal-pending">génération…</div>';
-  } else if (img.state === 'done' && img.file) {
-    const url = `/api/gallery/images/${img.id}/file`;
-    // Pas de `loading="lazy"` ici, contrairement aux images du fil : dans une grille
-    // insérée d'un coup, l'observateur d'intersection ne se déclenchait pas et les
-    // vignettes restaient vides. Une galerie personnelle tient largement le chargement.
-    body = `<img class="gal-img" src="${url}" alt="${esc(img.prompt)}"
-      data-zoom="${url}" data-name="${esc(name)}" decoding="async">`;
-  } else {
-    body = `<div class="gal-failed" title="${esc(img.error || '')}">${esc(
-      (img.error || 'Aucune image produite').slice(0, 90)
-    )}</div>`;
-  }
-
-  return `<figure class="gal-card${img.state === 'failed' ? ' failed' : ''}" data-image="${img.id}">
-    ${body}
-    <figcaption>
-      ${providerIcon(img.provider)}
-      <span class="gal-who">${esc(name)}</span>
-      ${cost}
-      <button class="gal-del" data-del="${img.id}" title="Supprimer">
-        <svg class="icon"><use href="#i-trash"/></svg>
-      </button>
-    </figcaption>
-  </figure>`;
-}
-
-function renderGalBatches(images) {
-  if (!images.length) {
-    $('#gal-batches').innerHTML =
-      '<div class="empty">Aucune image dans ce projet. Décris ce que tu veux, choisis les agents, et lance.</div>';
-    return;
-  }
-
-  // Regroupé par lot : une description, les agents côte à côte.
-  const order = [];
-  const byBatch = new Map();
-  for (const img of images) {
-    const key = img.batchId || img.id;
-    if (!byBatch.has(key)) {
-      byBatch.set(key, []);
-      order.push(key);
-    }
-    byBatch.get(key).push(img);
-  }
-
-  $('#gal-batches').innerHTML = order
-    .map((key) => {
-      const batch = byBatch.get(key);
-      return `<section class="gal-batch">
-        <p class="gal-prompt">${esc(batch[0].prompt)}</p>
-        <div class="gal-row">${batch.map(galImageCard).join('')}</div>
-      </section>`;
-    })
-    .join('');
-}
-
-async function loadGalleryImages() {
-  const id = $('#gal-project').value;
-  if (!id) {
-    $('#gal-batches').innerHTML =
-      '<div class="empty">Crée un projet pour commencer.</div>';
-    $('#gallery-sub').textContent = 'Aucun projet';
-    return;
-  }
-  try {
-    const { images } = await api('GET', `/api/gallery/projects/${id}/images`);
-    state.galImages = images;
-    renderGalBatches(images);
-    const done = images.filter((i) => i.state === 'done').length;
-    const spent = images.reduce((s, i) => s + (i.costUsd || 0), 0);
-    $('#gallery-sub').textContent = `${done} image${done > 1 ? 's' : ''}${
-      spent ? ` · ${money(spent)}` : ''
-    }`;
-  } catch (err) {
-    $('#gal-batches').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
-  }
-}
-
-async function showGallery() {
-  showView('#gallery-view');
-  state.currentId = null;
-  renderList();
-  try {
-    const { projects } = await api('GET', '/api/gallery');
-    state.galProjects = projects;
-    const wanted = PREFS.read(GAL.projectKey, null);
-    const pick = projects.some((p) => p.id === wanted) ? wanted : (projects[0] || {}).id || '';
-    $('#gal-project').innerHTML = projects.length
-      ? projects
-          .map(
-            (p) =>
-              `<option value="${p.id}"${p.id === pick ? ' selected' : ''}>${esc(p.name)} (${
-                p.count
-              })</option>`
-          )
-          .join('')
-      : '<option value="">Aucun projet</option>';
-    renderGalAgents();
-    await loadGalleryImages();
-  } catch (err) {
-    $('#gal-batches').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
-  }
-}
-
-$('#btn-gallery').addEventListener('click', () => {
-  showGallery();
-  closeNav();
+const galleryView = window.AgentHubGalleryView.create({
+  $,
+  api,
+  prefs: PREFS,
+  usableProviders,
+  providerLabels: PROVIDER_LABELS,
+  providerIcon,
+  esc,
+  escAttr,
+  money,
+  showView,
+  renderConversationList: renderList,
+  closeNav,
+  askInput,
+  askChoice,
+  undoToast,
+  openLightbox,
 });
-$('#btn-gallery-back').addEventListener('click', () => document.body.classList.add('nav-open'));
+galleryView.mount();
+// --- Paramètres -----------------------------------------------------------
 
-$('#gal-project').addEventListener('change', () => {
-  PREFS.write(GAL.projectKey, $('#gal-project').value);
-  loadGalleryImages();
+const settingsView = window.AgentHubSettingsView.create({
+  $,
+  api,
+  esc,
+  escAttr,
+  cssEscape,
+  showView,
+  renderConversationList: renderList,
+  closeNav,
+  loadProjects,
+  toast,
 });
-
-$('#gal-agents').addEventListener('click', (e) => {
-  const btn = e.target.closest('.gal-agent');
-  if (!btn) return;
-  btn.classList.toggle('on');
-  PREFS.write(GAL.agentsKey, galSelectedAgents());
-});
-
-$('#btn-gal-new').addEventListener('click', async () => {
-  const name = await askInput({ title: 'Nouveau projet', label: 'Nom', ok: 'Créer' });
-  if (!name || !name.trim()) return;
-  try {
-    const { project } = await api('POST', '/api/gallery/projects', { name: name.trim() });
-    PREFS.write(GAL.projectKey, project.id);
-    await showGallery();
-  } catch (err) {
-    $('#gal-error').textContent = err.message;
-  }
-});
-
-$('#btn-gal-menu').addEventListener('click', async () => {
-  const id = $('#gal-project').value;
-  const project = (state.galProjects || []).find((p) => p.id === id);
-  if (!project) return;
-
-  // C'était un `prompt` où il fallait TAPER « renommer » ou « supprimer » : deux boutons
-  // disent la même chose sans faire écrire le mot juste.
-  const action = await askChoice({
-    title: `« ${project.name} »`,
-    options: [
-      { value: 'rename', label: 'Renommer le projet' },
-      { value: 'delete', label: 'Supprimer le projet et toutes ses images', danger: true },
-    ],
-  });
-  if (!action) return;
-
-  if (action === 'delete') {
-    return void undoToast({
-      message: `« ${project.name} » et ses images supprimés`,
-      run: async () => {
-        try {
-          await api('DELETE', `/api/gallery/projects/${id}`);
-          if (PREFS.read(GAL.projectKey, null) === id) PREFS.write(GAL.projectKey, null);
-          await showGallery();
-        } catch (err) {
-          $('#gal-error').textContent = err.message;
-          throw err;
-        }
-      },
-    });
-  }
-
-  const name = await askInput({ title: 'Renommer le projet', label: 'Nom', value: project.name });
-  if (!name || !name.trim()) return;
-  try {
-    await api('PATCH', `/api/gallery/projects/${id}`, { name: name.trim() });
-    await showGallery();
-  } catch (err) {
-    $('#gal-error').textContent = err.message;
-  }
-});
-
-$('#btn-gal-run').addEventListener('click', async () => {
-  const id = $('#gal-project').value;
-  const description = $('#gal-prompt').value.trim();
-  const providers = galSelectedAgents();
-  const err = $('#gal-error');
-  err.textContent = '';
-
-  if (!id) return void (err.textContent = 'Crée un projet d\'abord.');
-  if (!description) return void (err.textContent = 'Décris ce que tu veux.');
-  if (!providers.length) return void (err.textContent = 'Choisis au moins un agent.');
-
-  $('#btn-gal-run').disabled = true;
-  try {
-    await api('POST', `/api/gallery/projects/${id}/generate`, {
-      prompt: description,
-      providers,
-    });
-    $('#gal-prompt').value = '';
-    await loadGalleryImages();
-  } catch (e2) {
-    err.textContent = e2.message;
-  } finally {
-    $('#btn-gal-run').disabled = false;
-  }
-});
-
-$('#gal-batches').addEventListener('click', async (e) => {
-  const zoom = e.target.closest('[data-zoom]');
-  if (zoom) return openLightbox(zoom.dataset.zoom, zoom.dataset.name);
-
-  const del = e.target.closest('[data-del]');
-  if (!del) return;
-  undoToast({
-    message: 'Image supprimée',
-    hide: del.closest('.gal-card'),
-    run: async () => {
-      try {
-        await api('DELETE', `/api/gallery/images/${del.dataset.del}`);
-        await loadGalleryImages();
-      } catch (err) {
-        $('#gal-error').textContent = err.message;
-        throw err;
-      }
-    },
-  });
-});
-
-// --- Paramètres --------------------------------------------------------------
-//
-// Quatre sections, un même squelette : des champs, un repère sur ce qui s'écarte du dépôt,
-// et un bouton qui ESSAIE pour de vrai. C'est ce dernier qui fait la valeur de la page —
-// configurer ntfy ou un SMTP à l'aveugle est exactement la raison pour laquelle ça n'avait
-// jamais été fait, et un champ rempli sans preuve ne vaut pas mieux qu'un fichier non édité.
-//
-// Le formulaire est décrit en données plutôt qu'écrit en HTML : cinq sections recopiées à la
-// main, c'est la garantie qu'une des cinq finira par diverger des autres.
-
-const SETTINGS_FORM = [
-  {
-    key: 'notify',
-    title: 'Notifications',
-    hint:
-      'Un POST sortant à la fin d’un turn, et dès qu’un agent pose une question. ' +
-      'Le Web Push du navigateur est hors jeu : il exige https, or l’app est servie en http par défaut.',
-    test: 'Envoyer une notification d’essai',
-    fields: [
-      { name: 'enabled', type: 'bool', label: 'Notifier' },
-      {
-        name: 'format',
-        type: 'select',
-        label: 'Destination',
-        options: [
-          ['ntfy', 'ntfy'],
-          ['json', 'Webhook JSON maison'],
-        ],
-      },
-      { name: 'url', type: 'text', label: 'URL du serveur', placeholder: 'https://ntfy.sh' },
-      {
-        name: 'topic',
-        type: 'text',
-        label: 'Sujet ntfy',
-        hint: 'Le nom auquel l’application ntfy de ton téléphone est abonnée. Requis pour ce format.',
-      },
-      {
-        name: 'appUrl',
-        type: 'text',
-        label: 'Lien vers agentHub',
-        hint: 'Mis dans la notification, avec l’ancre de la conversation. Vide : pas de lien.',
-      },
-      {
-        name: 'events',
-        type: 'checks',
-        label: 'Fins de turn notifiées',
-        hint:
-          'Une question d’agent part toujours, hors de cette liste : rien ne repart tant ' +
-          'qu’elle est sans réponse. Elle attend une minute si quelqu’un a la conversation à l’écran.',
-        options: [
-          ['done', 'Terminé'],
-          ['error', 'En échec'],
-          ['stopped', 'Interrompu'],
-        ],
-      },
-    ],
-  },
-  {
-    key: 'mail',
-    title: 'Mail',
-    hint: 'Rapports de fin de déclencheur. Le mot de passe ne repart jamais vers le navigateur.',
-    test: 'Envoyer un mail d’essai',
-    fields: [
-      { name: 'enabled', type: 'bool', label: 'Envoyer des mails' },
-      { name: 'host', type: 'text', label: 'Hôte SMTP', placeholder: 'smtp.exemple.fr' },
-      { name: 'port', type: 'number', label: 'Port' },
-      { name: 'secure', type: 'bool', label: 'TLS direct (port 465)' },
-      { name: 'user', type: 'text', label: 'Utilisateur' },
-      { name: 'pass', type: 'password', label: 'Mot de passe', hint: 'Laisser vide pour ne pas le changer.' },
-      { name: 'from', type: 'text', label: 'Expéditeur' },
-      { name: 'to', type: 'text', label: 'Destinataire par défaut' },
-    ],
-  },
-  {
-    key: 'browser',
-    title: 'Navigateur des agents',
-    hint:
-      'Le serveur MCP Playwright tourne à côté d’agentHub, pas dedans : il a son propre ' +
-      'Chromium et son propre service PM2.',
-    test: 'Vérifier que le service répond',
-    fields: [
-      { name: 'enabled', type: 'bool', label: 'Proposer un navigateur aux agents' },
-      {
-        name: 'url',
-        type: 'text',
-        label: 'URL du serveur MCP',
-        hint:
-          'Écrire « localhost » et non « 127.0.0.1 » : Playwright MCP vérifie l’en-tête Host ' +
-          'et répond « Access is denied » sinon.',
-      },
-      { name: 'name', type: 'text', label: 'Nom vu par les CLIs' },
-      {
-        name: 'grokGlobal',
-        type: 'bool',
-        label: 'Grok l’a en permanence',
-        hint:
-          'Purement déclaratif. À cocher seulement après un `grok mcp add` : Grok ne sait pas ' +
-          'recevoir de configuration MCP à l’appel, la sienne est globale.',
-      },
-    ],
-  },
-  {
-    key: 'memory',
-    title: 'Mémoire de projet',
-    hint:
-      'Un turn qui s’est cogné et s’en est sorti a peut-être appris quelque chose. Un second ' +
-      'turn, dans la même conversation, en tire une fiche — que tu gardes ou écartes. Les ' +
-      'fiches gardées sont remises dans le prompt des conversations du même projet.',
-    fields: [
-      {
-        name: 'enabled',
-        type: 'bool',
-        label: 'Tirer des leçons des turns qui se sont cognés',
-        hint:
-          'Chaque fiche coûte un turn de plus, avec tout le contexte de la conversation en ' +
-          'entrée. Rien n’est demandé sur un turn qui n’a rencontré aucune erreur.',
-      },
-      {
-        name: 'writeFile',
-        type: 'bool',
-        label: 'Écrire aussi la fiche dans docs/solutions/ du projet',
-        hint:
-          'Seulement si ce dossier existe déjà : on suit la convention d’un dépôt, on ne lui ' +
-          'en impose pas. Le fichier est neuf et non suivi par git.',
-      },
-    ],
-  },
-  {
-    key: 'groups',
-    title: 'Dossiers de travail',
-    hint: 'Ce que propose le sélecteur de dossier, à la création d’une conversation.',
-    fields: [
-      {
-        name: 'groups',
-        type: 'groups',
-        label: 'Groupes',
-        hint:
-          'L’ordre fait la priorité : un dossier déjà classé n’est pas repris par les suivants. ' +
-          'Un motif finissant par /* prend les sous-dossiers directs.',
-      },
-      {
-        name: 'newFolderParents',
-        type: 'lines',
-        label: 'Où créer un nouveau dossier',
-        hint: 'Un chemin par ligne.',
-      },
-      {
-        name: 'exclude',
-        type: 'lines',
-        label: 'Noms exclus',
-        hint: 'Une expression régulière par ligne, appliquée au nom du dossier.',
-      },
-    ],
-  },
-];
-
-const SETTINGS_BY_KEY = new Map(SETTINGS_FORM.map((s) => [s.key, s]));
-
-async function showSettings() {
-  showView('#settings-view');
-  state.currentId = null;
-  renderList();
-  await loadSettings();
-}
-
-async function loadSettings() {
-  try {
-    const data = await api('GET', '/api/settings');
-    state.settings = data.sections;
-    renderSettings();
-  } catch (err) {
-    $('#settings-body').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
-  }
-}
-
-function settingsField(section, field, values, overridden) {
-  const id = `set-${section.key}-${field.name}`;
-  const value = values[field.name];
-  const changed = overridden.includes(field.name) ? ' set-changed' : '';
-  const hint = field.hint ? `<p class="set-hint">${esc(field.hint)}</p>` : '';
-  const name = escAttr(field.name);
-
-  if (field.type === 'bool') {
-    return `<div class="set-field set-bool${changed}">
-      <label for="${id}"><input type="checkbox" id="${id}" data-set="${name}"${value ? ' checked' : ''}>
-        <span>${esc(field.label)}</span></label>${hint}</div>`;
-  }
-
-  if (field.type === 'checks') {
-    const boxes = field.options
-      .map(
-        ([v, l]) => `<label class="set-check"><input type="checkbox" data-set-item="${escAttr(v)}"${
-          (value || []).includes(v) ? ' checked' : ''
-        }><span>${esc(l)}</span></label>`
-      )
-      .join('');
-    return `<div class="set-field${changed}" data-set-group="${name}">
-      <span class="set-label">${esc(field.label)}</span>
-      <div class="set-checks">${boxes}</div>${hint}</div>`;
-  }
-
-  if (field.type === 'select') {
-    const opts = field.options
-      .map(([v, l]) => `<option value="${escAttr(v)}"${value === v ? ' selected' : ''}>${esc(l)}</option>`)
-      .join('');
-    return `<div class="set-field${changed}"><label class="set-label" for="${id}">${esc(
-      field.label
-    )}</label><select id="${id}" data-set="${name}">${opts}</select>${hint}</div>`;
-  }
-
-  if (field.type === 'lines') {
-    return `<div class="set-field${changed}"><label class="set-label" for="${id}">${esc(
-      field.label
-    )}</label><textarea id="${id}" data-set="${name}" rows="${Math.min(
-      12,
-      Math.max(3, (value || []).length + 1)
-    )}">${esc((value || []).join('\n'))}</textarea>${hint}</div>`;
-  }
-
-  if (field.type === 'groups') {
-    const rows = (value || []).map(settingsGroupRow).join('');
-    return `<div class="set-field${changed}" data-set-groups="${name}">
-      <span class="set-label">${esc(field.label)}</span>
-      <div class="set-group-list">${rows}</div>
-      <button type="button" class="secondary set-group-add">Ajouter un groupe</button>${hint}</div>`;
-  }
-
-  const type = field.type === 'password' ? 'password' : field.type === 'number' ? 'number' : 'text';
-  const holder = field.placeholder ? ` placeholder="${escAttr(field.placeholder)}"` : '';
-  const shown = field.type === 'password' && values[`${field.name}Set`] ? ' placeholder="inchangé"' : holder;
-  return `<div class="set-field${changed}"><label class="set-label" for="${id}">${esc(
-    field.label
-  )}</label><input type="${type}" id="${id}" data-set="${name}" value="${escAttr(
-    value == null ? '' : value
-  )}"${shown}>${hint}</div>`;
-}
-
-function settingsGroupRow(group) {
-  return `<div class="set-group">
-    <input type="text" class="set-group-label" value="${escAttr(group.label || '')}" placeholder="Nom du groupe">
-    <textarea class="set-group-patterns" rows="${Math.max(
-      2,
-      (group.patterns || []).length
-    )}" placeholder="~/projects/*">${esc((group.patterns || []).join('\n'))}</textarea>
-    <button type="button" class="ghost set-group-del" title="Retirer ce groupe">
-      <svg class="icon"><use href="#i-trash"/></svg>
-    </button>
-  </div>`;
-}
-
-function renderSettings() {
-  const sections = state.settings || {};
-  $('#settings-body').innerHTML = SETTINGS_FORM.map((section) => {
-    const data = sections[section.key] || { values: {}, overridden: [] };
-    const fields = section.fields
-      .map((f) => settingsField(section, f, data.values, data.overridden))
-      .join('');
-    const modified = data.overridden.length
-      ? `<span class="set-badge" title="${escAttr(
-          `Écarts enregistrés dans data/settings.json : ${data.overridden.join(', ')}`
-        )}">modifié</span>`
-      : '';
-    const reset = data.overridden.length
-      ? '<button type="button" class="secondary set-reset">Revenir aux valeurs du dépôt</button>'
-      : '';
-    const test = section.test
-      ? `<button type="button" class="secondary set-test">${esc(section.test)}</button>`
-      : '';
-
-    return `<section class="set-card" data-section="${escAttr(section.key)}">
-      <div class="set-card-head"><h3>${esc(section.title)}</h3>${modified}</div>
-      <p class="set-intro">${esc(section.hint)}</p>
-      <div class="set-fields">${fields}</div>
-      <div class="set-foot">
-        ${reset}${test}
-        <button type="button" class="primary set-save">Enregistrer</button>
-        <span class="set-result"></span>
-      </div>
-    </section>`;
-  }).join('');
-}
-
-/** Relit les champs d'une section dans le DOM. */
-function collectSettings(card) {
-  const section = SETTINGS_BY_KEY.get(card.dataset.section);
-  const out = {};
-
-  for (const field of section.fields) {
-    if (field.type === 'checks') {
-      const box = card.querySelector(`[data-set-group="${cssEscape(field.name)}"]`);
-      out[field.name] = [...box.querySelectorAll('[data-set-item]')]
-        .filter((i) => i.checked)
-        .map((i) => i.dataset.setItem);
-      continue;
-    }
-
-    if (field.type === 'groups') {
-      out[field.name] = [...card.querySelectorAll('.set-group')].map((row) => ({
-        label: row.querySelector('.set-group-label').value,
-        patterns: row.querySelector('.set-group-patterns').value.split('\n'),
-      }));
-      continue;
-    }
-
-    const el = card.querySelector(`[data-set="${cssEscape(field.name)}"]`);
-    if (!el) continue;
-    if (field.type === 'bool') out[field.name] = el.checked;
-    else if (field.type === 'lines') out[field.name] = el.value.split('\n');
-    else if (field.type === 'number') out[field.name] = Number(el.value);
-    else out[field.name] = el.value;
-  }
-  return out;
-}
-
-function settingsResult(section, ok, text) {
-  // Retrouvé par sa section et non gardé en référence : `renderSettings` remplace les cartes,
-  // et un compte rendu posé sur l'ancienne disparaîtrait sans que l'essai en soit informé.
-  const slot = document.querySelector(`.set-card[data-section="${cssEscape(section)}"] .set-result`);
-  if (!slot) return;
-  slot.textContent = text;
-  slot.classList.toggle('bad', !ok);
-  slot.classList.toggle('good', ok);
-}
-
-$('#settings-body').addEventListener('click', async (e) => {
-  const card = e.target.closest('.set-card');
-  if (!card) return;
-
-  if (e.target.closest('.set-group-add')) {
-    card.querySelector('.set-group-list').insertAdjacentHTML(
-      'beforeend',
-      settingsGroupRow({ label: '', patterns: [] })
-    );
-    return;
-  }
-
-  const drop = e.target.closest('.set-group-del');
-  if (drop) return void drop.closest('.set-group').remove();
-
-  const save = e.target.closest('.set-save');
-  const test = e.target.closest('.set-test');
-  const reset = e.target.closest('.set-reset');
-  if (!save && !test && !reset) return;
-
-  const button = save || test || reset;
-  const key = card.dataset.section;
-  button.disabled = true;
-  settingsResult(key, true, '…');
-
-  try {
-    if (reset) {
-      const data = await api('DELETE', `/api/settings/${key}`);
-      state.settings = data.sections;
-      renderSettings();
-      if (key === 'groups') loadProjects().catch(() => {});
-      return void toast('Valeurs du dépôt rétablies');
-    }
-
-    const values = collectSettings(card);
-
-    if (save) {
-      const data = await api('POST', `/api/settings/${key}`, values);
-      state.settings = data.sections;
-      renderSettings();
-      // La liste des dossiers de travail vient du serveur : elle doit suivre.
-      if (key === 'groups') loadProjects().catch(() => {});
-      return void toast('Enregistré');
-    }
-
-    // Le test enregistre d'abord : sinon il porterait sur autre chose que ce qui est à
-    // l'écran, et un essai concluant ne prouverait rien de la configuration retenue.
-    const out = await api('POST', `/api/settings/${key}/test`, { values });
-    // On recharge AVANT d'afficher : l'enregistrement fait par le test a changé le repère
-    // « modifié », donc les cartes sont repeintes — et le compte rendu doit survivre à ça.
-    await loadSettings();
-    settingsResult(key, out.ok, out.detail || (out.ok ? 'OK' : 'Échec'));
-  } catch (err) {
-    settingsResult(key, false, err.message);
-  } finally {
-    // `renderSettings` a pu remplacer le bouton : ne réactiver que celui qui existe encore.
-    if (button.isConnected) button.disabled = false;
-  }
-});
-
-$('#btn-settings').addEventListener('click', () => {
-  showSettings();
-  document.body.classList.remove('nav-open');
-});
-$('#btn-settings-refresh').addEventListener('click', loadSettings);
-$('#btn-settings-back').addEventListener('click', () => document.body.classList.add('nav-open'));
-
+settingsView.mount();
 // --- Aperçu en grand ------------------------------------------------------
 
 function openLightbox(url, name) {
@@ -7445,6 +7371,28 @@ $('#messages').addEventListener(
 
 // Vignettes des messages déjà envoyés
 $('#messages').addEventListener('click', (e) => {
+  const retryConv = e.target.closest('[data-retry-conv]');
+  if (retryConv) {
+    openConv(retryConv.dataset.retryConv);
+    return;
+  }
+
+  if (e.target.closest('[data-history-older]')) {
+    loadOlderMessages();
+    return;
+  }
+
+  if (e.target.closest('[data-history-recent]')) {
+    if (state.currentId) openConv(state.currentId, null, { recent: true });
+    return;
+  }
+
+  const fullResult = e.target.closest('[data-tool-result]');
+  if (fullResult) {
+    loadFullToolResult(fullResult);
+    return;
+  }
+
   const thumb = e.target.closest('[data-image]');
   if (thumb) {
     openLightbox(thumb.dataset.image, thumb.dataset.name || '');
@@ -7463,6 +7411,32 @@ $('#messages').addEventListener('click', (e) => {
   const idea = e.target.closest('.idea-add');
   if (idea) addIdeaToTodo(idea);
 });
+
+async function loadFullToolResult(button) {
+  const convId = state.currentId;
+  const itemId = button.dataset.toolResult;
+  if (!convId || !state.current || !itemId || button.disabled) return;
+  button.disabled = true;
+  button.textContent = 'Chargement…';
+  try {
+    const data = await api(
+      'GET',
+      `/api/conversations/${encodeURIComponent(convId)}/items/${encodeURIComponent(itemId)}/result`
+    );
+    if (state.currentId !== convId || !state.current) return;
+    const item = state.current.items.find((entry) => entry.id === itemId);
+    if (!item) return;
+    item.result = data.result == null ? '' : String(data.result);
+    item.resultLength = item.result.length;
+    item.resultTruncated = false;
+    item._resultExpanded = true;
+    replaceMessageItem(item);
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = 'Afficher le résultat complet';
+    toastError(`Résultat indisponible : ${err.message}`);
+  }
+}
 
 /**
  * Lancer une idée tout de suite, sans la retaper.
@@ -7561,8 +7535,10 @@ function refreshIdeaButtons() {
 // qu'il avait avant ce message, depuis l'instantané pris à ce moment-là.
 
 let modalAction = null;
+let modalGeneration = 0;
 
 function openModal(title, bodyHtml, okLabel, action, danger) {
+  modalGeneration += 1;
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = bodyHtml;
   $('#modal-ok').textContent = okLabel;
@@ -7574,9 +7550,11 @@ function openModal(title, bodyHtml, okLabel, action, danger) {
   $('#modal-ok').classList.toggle('primary', !danger);
   modalAction = action;
   $('#modal').classList.remove('hidden');
+  return modalGeneration;
 }
 
 function closeModal() {
+  modalGeneration += 1;
   // Fermer la fenêtre de connexion abandonne le flux, quelle que soit la façon de la
   // fermer — bouton, Échap ou clic à côté. Laisser un CLI attendre une autorisation que
   // personne ne donnera ne sert à rien.
@@ -7598,11 +7576,14 @@ $('#modal').addEventListener('click', (e) => {
 $('#modal-ok').addEventListener('click', async () => {
   const action = modalAction;
   if (!action) return;
+  const generation = modalGeneration;
   $('#modal-ok').disabled = true;
   try {
     await action();
+    if (generation !== modalGeneration) return;
     closeModal();
   } catch (err) {
+    if (generation !== modalGeneration) return;
     const slot = $('#modal-error');
     if (slot) {
       // Formulaire conservé : une erreur de saisie ne doit pas faire perdre ce qui a
@@ -7622,17 +7603,26 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function askRestore(sha) {
-  openModal('Restaurer les fichiers', '<p>Comparaison en cours…</p>', 'Restaurer', null);
+  const convId = state.currentId;
+  if (!convId) return;
+  const generation = openModal(
+    'Restaurer les fichiers',
+    '<p>Comparaison en cours…</p>',
+    'Restaurer',
+    null
+  );
   let files;
   try {
     ({ files } = await api(
       'GET',
-      `/api/conversations/${state.currentId}/checkpoints/${sha}/diff`
+      `/api/conversations/${convId}/checkpoints/${sha}/diff`
     ));
   } catch (err) {
+    if (state.currentId !== convId || modalGeneration !== generation) return;
     openModal('Restauration impossible', `<div class="modal-warn">${esc(err.message)}</div>`, '', null);
     return;
   }
+  if (state.currentId !== convId || modalGeneration !== generation) return;
 
   if (!files.length) {
     openModal(
@@ -7658,7 +7648,7 @@ async function askRestore(sha) {
      <div class="modal-warn">Cette opération écrase le dossier de travail. Un instantané de sécurité est pris juste avant, donc l'opération reste annulable. La conversation, elle, n'est pas modifiée.</div>`,
     'Restaurer les fichiers',
     async () => {
-      await api('POST', `/api/conversations/${state.currentId}/checkpoints/${sha}/restore`);
+      await api('POST', `/api/conversations/${convId}/checkpoints/${sha}/restore`);
     },
     true
   );
@@ -7758,11 +7748,8 @@ function relayBody(files, warning) {
             .join('')}
         </select>
       </div>
-      <div class="relay-field">
-        <label class="relay-label" for="relay-model">Modèle</label>
-        <select id="relay-model">${relayModelOptions(provider)}</select>
-      </div>
     </div>
+    <div id="relay-model-controls" class="relay-field"></div>
 
     <div class="relay-field">
       <label class="relay-label" for="relay-prompt">Consigne</label>
@@ -7825,24 +7812,44 @@ function relayFile() {
 
 async function askRelay() {
   if (!state.currentId || !state.current) return;
+  const convId = state.currentId;
 
-  openModal('Relais', '<p>Recherche des fichiers produits…</p>', '', null);
+  const generation = openModal('Relais', '<p>Recherche des fichiers produits…</p>', '', null);
   let files = [];
   let warning = null;
   try {
-    const data = await api('GET', `/api/conversations/${state.currentId}/relay/files`);
+    const data = await api('GET', `/api/conversations/${convId}/relay/files`);
     files = data.files || [];
     warning = data.warning || null;
   } catch (err) {
     warning = err.message;
   }
+  if (
+    state.currentId !== convId ||
+    !state.current ||
+    modalGeneration !== generation
+  ) {
+    return;
+  }
 
-  openModal('Relais', relayBody(files, warning), "Lancer l'enfant", async () => {
+  let relayPicker;
+  let relayProvider = state.current.provider;
+  const relayChoices = new Map([[relayProvider, { model: state.current.model || '', effort: state.current.effort || '' }]]);
+  function renderRelayPicker() {
+    relayProvider = $('#relay-provider').value;
+    relayPicker = window.AgentHubModelPicker.mount($('#relay-model-controls'), {
+      provider: relayProvider, ...(relayChoices.get(relayProvider) || { model: '', effort: '' }), catalog: state.models,
+    });
+  }
+  const relayGeneration = openModal('Relais', relayBody(files, warning), "Lancer l'enfant", async () => {
+    if (!relayPicker.isValid()) throw new Error('Renseigne un identifiant de modèle.');
+    await conversationModelSettings.wait(convId);
     const from = relayFrom();
     const body = {
       from,
       provider: $('#relay-provider').value,
-      model: $('#relay-model').value || null,
+      model: relayPicker.read().model || null,
+      effort: relayPicker.read().effort || null,
       prompt: $('#relay-prompt').value.trim(),
     };
     if (from === 'file') {
@@ -7857,15 +7864,19 @@ async function askRelay() {
       $('#modal-ok').textContent = 'Note de passation en cours…';
     }
 
-    const { conversation } = await api('POST', `/api/conversations/${state.currentId}/relay`, body);
+    const { conversation } = await api('POST', `/api/conversations/${convId}/relay`, body);
     await refreshList();
-    openConv(conversation.id);
+    if (state.currentId === convId && modalGeneration === relayGeneration) {
+      openConv(conversation.id);
+    }
   });
 
   $('#relay-provider').addEventListener('change', () => {
-    $('#relay-model').innerHTML = relayModelOptions($('#relay-provider').value);
+    relayChoices.set(relayProvider, relayPicker.read());
+    renderRelayPicker();
     syncRelay();
   });
+  renderRelayPicker();
   for (const radio of document.querySelectorAll('input[name="relay-from"]')) {
     radio.addEventListener('change', syncRelay);
   }
@@ -7888,8 +7899,8 @@ $('#btn-relay').addEventListener('click', askRelay);
 // le champ et rien n'est envoyé. L'envoi reste toujours une action explicite.
 //
 // La reconnaissance vocale exige un contexte sécurisé (https). Servie en http,
-// l'app n'en est pas un : on le dit clairement au lieu d'échouer en silence, et
-// on renvoie vers la touche micro du clavier, qui fait la même chose.
+// l'app n'en est pas un : on le dit clairement au lieu d'échouer
+// en silence, et on renvoie vers la touche micro du clavier, qui fait la même chose.
 
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 const micBtn = $('#btn-mic');
@@ -8025,6 +8036,93 @@ if (micBlockedReason()) {
 
 let ws;
 let retry = 0;
+let connectedOnce = false;
+
+async function resyncCurrentConversation() {
+  if (!state.currentId || !state.current || document.visibilityState !== 'visible') return;
+  const id = state.currentId;
+  const serial = ++resyncSerial;
+  // Distingue les items déjà présents de ceux reçus en direct pendant le GET. Si le
+  // backlog dépasse une page et qu'il n'y a plus aucun recouvrement, ces derniers sont
+  // les seuls items locaux dont on connaisse encore sûrement la position après le snapshot.
+  const idsBeforeRequest = new Set(state.current.items.map((item) => item.id));
+  const selectionBeforeRequest = state.current.modelSelection;
+  try {
+    const data = await api(
+      'GET',
+      `/api/conversations/${encodeURIComponent(id)}?limit=${messagePageSize(window.innerWidth)}`
+    );
+    if (serial !== resyncSerial || state.currentId !== id || !state.current) return;
+
+    const localItems = state.current.items;
+    const previousTotal = messagePage.total;
+    const newerModelSettings = state.current.modelSelection !== selectionBeforeRequest
+      ? Object.fromEntries(['model', 'effort', 'modelSelection', 'lastModelSelection'].map((key) => [key, state.current[key]]))
+      : null;
+    Object.assign(state.current, data.conversation, { items: localItems });
+    if (newerModelSettings) Object.assign(state.current, newerModelSettings);
+    state.isRunning = data.running;
+    state.queue = data.conversation.queue || [];
+    state.ask = data.ask || null;
+
+    if (messagePage.hasNewer) {
+      const total = Number(data.page && data.page.total) || previousTotal;
+      messagePage.pendingNew += Math.max(0, total - previousTotal);
+      messagePage.total = total;
+      renderHistoryControls();
+    } else {
+      const remoteItems = data.conversation.items || [];
+      const localById = new Map(localItems.map((item) => [item.id, item]));
+      const missing = remoteItems.some((item) => !localById.has(item.id));
+      if (missing) {
+        const remoteIds = new Set(remoteItems.map((item) => item.id));
+        const overlapIndexes = localItems
+          .map((item, index) => (remoteIds.has(item.id) ? index : -1))
+          .filter((index) => index !== -1);
+        const firstOverlap = overlapIndexes.length ? overlapIndexes[0] : -1;
+        const lastOverlap = overlapIndexes.length ? overlapIndexes[overlapIndexes.length - 1] : -1;
+        // Sans recouvrement, garder l'ancien tail créerait un trou invisible avant le
+        // nouveau snapshot. On repart donc de la page serveur ; le bouton « précédents »
+        // rechargera une suite contiguë grâce à son nouveau curseur.
+        const prefix = firstOverlap === -1 ? [] : localItems.slice(0, firstOverlap);
+        const suffixSource =
+          lastOverlap === -1
+            ? localItems.filter((item) => !idsBeforeRequest.has(item.id))
+            : localItems.slice(lastOverlap + 1);
+        const suffix = suffixSource.filter((item) => !remoteIds.has(item.id));
+        const tail = remoteItems.map((item) => {
+          const previous = localById.get(item.id);
+          return previous && previous._resultExpanded
+            ? { ...item, result: previous.result, resultLength: previous.resultLength, resultTruncated: false, _resultExpanded: true }
+            : item;
+        });
+        state.current.items = prefix.concat(tail, suffix);
+        if (!prefix.length) {
+          messagePage.hasMore = Boolean(data.page && data.page.hasMore);
+          messagePage.before = (data.page && data.page.before) || null;
+        }
+        renderMessages();
+      } else {
+        for (const remote of remoteItems) replaceMessageItem(remote);
+      }
+      messagePage.total = Math.max(
+        Number(data.page && data.page.total) || 0,
+        previousTotal,
+        state.current.items.length
+      );
+      messagePage.hasNewer = false;
+      messagePage.pendingNew = 0;
+      renderHistoryControls();
+    }
+    renderQueue();
+    renderAskPending();
+    renderHead();
+    renderPromptModel();
+    renderGoalLive();
+  } catch {
+    // La reprise est opportuniste : la prochaine activité ou reconnexion retentera.
+  }
+}
 
 /**
  * Annonce ce que cet onglet regarde. C'est la seule chose que le navigateur envoie sur le
@@ -8050,14 +8148,21 @@ function sendPresence() {
 // Battement deux fois plus rapide que la péremption côté serveur : un onglet bien vivant ne
 // doit jamais être compté absent parce qu'un message s'est perdu.
 setInterval(sendPresence, 40_000);
-document.addEventListener('visibilitychange', sendPresence);
+document.addEventListener('visibilitychange', () => {
+  sendPresence();
+  if (document.visibilityState === 'visible') resyncCurrentConversation();
+});
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
 
   ws.onopen = () => {
+    const reconnected = connectedOnce;
+    connectedOnce = true;
     retry = 0;
+    sendPresence();
     refreshList();
+    if (reconnected) resyncCurrentConversation();
   };
 
   ws.onclose = () => {
@@ -8108,19 +8213,24 @@ function connect() {
 
       case 'item':
         if (mine) {
-          clearStreams();
-          state.current.items.push(msg.item);
-          const html = renderItem(msg.item);
-          if (html) {
-            const wrap = document.createElement('div');
-            wrap.innerHTML = html;
-            const stick = atBottom();
-            // `is-new` déclenche l'animation d'apparition : seulement sur les
-            // éléments qui arrivent en direct, pas au rendu complet du fil.
-            const nodes = [...wrap.children];
-            nodes.forEach((n) => n.classList.add('is-new'));
-            $('#messages').append(...wrap.childNodes);
-            scrollDown(stick);
+          if (!state.current) {
+            bufferOpeningEvent(msg);
+          } else {
+            clearStreams();
+            const idx = state.current.items.findIndex((item) => item.id === msg.item.id);
+            if (idx !== -1) {
+              replaceMessageItem(msg.item);
+            } else if (messagePage.hasNewer) {
+              messagePage.pendingNew += 1;
+              messagePage.total += 1;
+              renderHistoryControls();
+            } else {
+              const stick = atBottom();
+              state.current.items.push(msg.item);
+              messagePage.total += 1;
+              appendMessageItem(msg.item, true);
+              scrollDown(stick);
+            }
           }
         }
         // Un item ne change de la liste que l'ordre de fraîcheur : rien qui vaille un
@@ -8130,42 +8240,24 @@ function connect() {
 
       case 'itemUpdate':
         if (mine) {
-          const idx = state.current.items.findIndex((it) => it.id === msg.item.id);
-          if (idx !== -1) state.current.items[idx] = msg.item;
-          // Vaut pour un outil dont le résultat arrive comme pour un avis repeint
-          // en erreur quand le turn a finalement échoué.
-          const node = document.querySelector(`[data-item="${msg.item.id}"]`);
-          if (node) {
-            const wasOpen = node.open;
-            const wrap = document.createElement('div');
-            wrap.innerHTML = renderItem(msg.item);
-            const fresh = wrap.firstElementChild;
-            if (fresh) {
-              if (wasOpen !== undefined && 'open' in fresh) fresh.open = wasOpen;
-              node.replaceWith(fresh);
-            }
-          }
+          if (!state.current) bufferOpeningEvent(msg);
+          else replaceMessageItem(msg.item);
         }
         break;
 
       case 'delta':
-        if (mine) {
-          const el = streamEl(msg.kind);
-          el.dataset.raw += msg.text;
-          const stick = atBottom();
-          el.innerHTML =
-            msg.kind === 'thinking'
-              ? `${esc(el.dataset.raw)}<span class="caret"></span>`
-              : `${md(el.dataset.raw)}<span class="caret"></span>`;
-          scrollDown(stick);
-        }
+        if (mine && state.current && !messagePage.hasNewer) queueStreamDelta(msg.kind, msg.text);
         break;
 
       case 'status':
         if (mine) {
-          state.current.status = msg.status;
-          setRunning(msg.status === 'working');
-          renderHead();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            state.current.status = msg.status;
+            if (msg.modelSelection) state.current.modelSelection = msg.modelSelection;
+            setRunning(msg.status === 'working');
+            renderHead();
+          }
         }
         // La pastille doit changer tout de suite, y compris pour une conversation qui n'est
         // pas celle affichée : c'est le seul signe qu'un agent lancé ailleurs travaille.
@@ -8187,30 +8279,59 @@ function connect() {
 
       case 'metrics':
         if (mine) {
-          if (msg.totalCostUsd != null) state.current.totalCostUsd = msg.totalCostUsd;
-          if (msg.contextTokens != null) state.current.contextTokens = msg.contextTokens;
-          if (msg.contextWindow != null) state.current.contextWindow = msg.contextWindow;
-          if (msg.lastModels != null) state.current.lastModels = msg.lastModels;
-          renderHead();
-          renderPromptModel();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            if (msg.totalCostUsd != null) state.current.totalCostUsd = msg.totalCostUsd;
+            if (msg.contextTokens != null) state.current.contextTokens = msg.contextTokens;
+            if (msg.contextWindow != null) state.current.contextWindow = msg.contextWindow;
+            if (msg.lastModels != null) state.current.lastModels = msg.lastModels;
+            if (msg.modelSelection) state.current.modelSelection = msg.modelSelection;
+            renderHead();
+            renderPromptModel();
+          }
+        }
+        break;
+
+      case 'modelSelection':
+        if (mine) {
+          if (!state.current) bufferOpeningEvent(msg);
+          else { state.current.modelSelection = msg.modelSelection; renderPromptModel(); }
         }
         break;
 
       // La boucle d'objectif avance seule : le bandeau doit suivre sans qu'on ait rien demandé.
       case 'goal':
         if (mine) {
-          state.current.goal = msg.goal;
-          renderGoalLive();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            state.current.goal = msg.goal;
+            renderGoalLive();
+          }
         }
         break;
 
       case 'queue':
         if (mine) {
-          state.queue = msg.queue;
-          if (!state.queue.some((q) => q.id === editingQueueId)) editingQueueId = null;
-          renderQueue();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            state.queue = msg.queue;
+            if (!state.queue.some((q) => q.id === editingQueueId)) editingQueueId = null;
+            renderQueue();
+          }
         }
         break;
+
+      case 'activity': {
+        const row = state.convs.find((conv) => conv.id === msg.convId);
+        if (row && msg.updatedAt) row.updatedAt = msg.updatedAt;
+        window.dispatchEvent(
+          new CustomEvent('agenthub:activity', {
+            detail: { convId: msg.convId, updatedAt: msg.updatedAt || null, conversation: row || null },
+          })
+        );
+        scheduleListRefresh();
+        break;
+      }
 
       case 'folders':
         if (msg.folders) state.folders = msg.folders;
@@ -8253,8 +8374,11 @@ function connect() {
         if (!msg.ask) break;
         trackAsk(msg.ask, false);
         if (msg.ask.convId === state.currentId) {
-          state.ask = msg.ask;
-          renderAskPending();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            state.ask = msg.ask;
+            renderAskPending();
+          }
         }
         break;
 
@@ -8280,8 +8404,11 @@ function connect() {
         if (!msg.ask) break;
         trackAsk(msg.ask, true);
         if (msg.ask.convId === state.currentId) {
-          state.ask = null;
-          renderAskPending();
+          if (!state.current) bufferOpeningEvent(msg);
+          else {
+            state.ask = null;
+            renderAskPending();
+          }
         }
         break;
 
@@ -8332,11 +8459,11 @@ function connect() {
       }
 
       case 'gallery':
-        if (!$('#gallery-view').classList.contains('hidden')) loadGalleryImages();
+        if (!$('#gallery-view').classList.contains('hidden')) galleryView.loadImages();
         break;
 
       case 'gallery-projects':
-        if (!$('#gallery-view').classList.contains('hidden')) showGallery();
+        if (!$('#gallery-view').classList.contains('hidden')) galleryView.show();
         break;
 
       case 'account':
@@ -8345,7 +8472,11 @@ function connect() {
           renderAccounts();
           renderFilters();
           renderNoProvider();
-          renderProviderPick('#provider-pick', state.provider);
+          const activeProvider = renderProviderPick('#provider-pick', state.provider);
+          if (activeProvider && activeProvider !== state.provider) {
+            state.provider = activeProvider;
+            renderModels();
+          }
         }
         break;
 
@@ -8354,12 +8485,15 @@ function connect() {
         // Le titre peut changer sans que personne n'ait cliqué : le modèle nomme la
         // conversation quelques secondes après son premier message. L'en-tête doit suivre,
         // sinon il garde « Nouvelle conversation » sous les yeux de qui regarde.
-        if (msg.conversation && msg.conversation.id === state.currentId && state.current) {
-          state.current.title = msg.conversation.title;
-          renderHead();
+        if (msg.conversation && msg.conversation.id === state.currentId) {
+          if (!state.current) bufferOpeningEvent(msg);
+          else { mergeConversationModelMetadata(msg.conversation); renderHead(); }
         }
         refreshList();
-        if (msg.type === 'deleted' && msg.convId === state.currentId) showNew();
+        if (msg.type === 'deleted') {
+          if (msg.convId === state.currentId) showNew({ replace: true });
+          discardComposerDraft(msg.convId);
+        }
         // Le second volet montrait cette conversation : le laisser ouvert afficherait l'écran
         // de création dans un volet qu'on n'a pas demandé. Jamais depuis le volet lui-même :
         // il partage ce `localStorage` et effacerait la préférence de la page principale.
@@ -8374,36 +8508,120 @@ function connect() {
 
 // --- Amorçage -------------------------------------------------------------
 
+let appReady = false;
+let pendingRoute = null;
+
+function applyRoute(route) {
+  if (!route) return;
+  if (!appReady) {
+    pendingRoute = route;
+    return;
+  }
+  applyingRoute = true;
+  try {
+    if (route.conv) {
+      const exists = state.convs.some((conv) => conv.id === route.conv);
+      if (exists) openConv(route.conv, route.focus || null, { fromRoute: true });
+      else if (window.AgentHubWorkspace && window.AgentHubWorkspace.open) {
+        if (window.AgentHubNavigation) {
+          window.AgentHubNavigation.replace({ view: 'inbox' }, { silent: true });
+        }
+        window.AgentHubWorkspace.open({ view: 'inbox' });
+      } else {
+        if (window.AgentHubNavigation) {
+          window.AgentHubNavigation.replace({ view: 'new' }, { silent: true });
+        }
+        showNew({ route: false });
+      }
+      return;
+    }
+
+    const handlers = {
+      new: () => showNew({ route: false }),
+      usage: () => showUsage(),
+      triggers: () => showTriggers(),
+      skills: () => showSkills(),
+      connections: () => showConnections(),
+      gallery: () => galleryView.show(),
+      server: () => serverView.show(),
+      settings: () => settingsView.show(),
+    };
+    if (handlers[route.view]) handlers[route.view]();
+    // Les vues workspace écoutent elles-mêmes agenthub:route. Pour la route initiale, aucun
+    // événement navigateur n'a encore eu lieu : on les ouvre donc explicitement ici.
+    else if (!route.source && window.AgentHubWorkspace && window.AgentHubWorkspace.open) {
+      window.AgentHubWorkspace.open(route);
+    }
+  } finally {
+    applyingRoute = false;
+  }
+}
+
+async function openPanel(kind, convId) {
+  if (!['notes', 'plans', 'git'].includes(kind)) return false;
+  if (!convId) return false;
+  if (state.currentId !== convId || !state.current) {
+    const opened = await openConv(convId);
+    if (!opened) return false;
+  }
+  if (state.currentId !== convId || !state.current) return false;
+  const config = {
+    notes: ['#notes-panel', '#btn-notes'],
+    plans: ['#plans-panel', '#btn-plans'],
+    git: ['#git-panel', '#btn-git'],
+  }[kind];
+  if ($(config[0]).classList.contains('hidden')) $(config[1]).click();
+  return true;
+}
+
+window.agentHub = {
+  openConversation: openConv,
+  openPanel,
+  showNew,
+  showView,
+  getState: () => state,
+  refreshList,
+  navigate(route, options) {
+    if (window.AgentHubNavigation) return window.AgentHubNavigation.navigate(route, options);
+    applyRoute(route);
+    return route;
+  },
+};
+
+window.addEventListener('agenthub:route', (event) => applyRoute(event.detail));
+window.dispatchEvent(new CustomEvent('agenthub:bridge-ready', { detail: window.agentHub }));
+
 (async function init() {
   connect();
 
-  try {
-    state.models = await api('GET', '/api/models');
-  } catch {
-    state.models = null;
-  }
-  renderModels();
-
-  try {
-    await loadProjects();
-  } catch (err) {
+  // Les intégrations de l'écran de création ne doivent pas retarder l'ouverture du fil.
+  // Elles se chargent en parallèle ; seuls les modèles, nécessaires aux sélecteurs de la
+  // conversation, restent dans le chemin critique avec la liste très légère.
+  const modelsReady = api('GET', '/api/models')
+    .then((models) => {
+      state.models = models;
+    })
+    .catch(() => {
+      state.models = null;
+    })
+    .then(renderModels);
+  loadProjects().catch((err) => {
     $('#new-error').textContent = `Liste des dossiers indisponible : ${err.message}`;
-  }
+  });
+  refreshAccounts();
 
-  await refreshAccounts();
-
-  renderLimits();
   setInterval(() => renderLimits(), 120_000);
   setInterval(refreshResetTitles, 30_000);
 
-  await refreshList();
+  await Promise.all([modelsReady, refreshList()]);
+  renderLimits();
 
   // Mode « volet seul » : la page tourne dans l'iframe de droite. Une seule conversation, et
   // rien autour — la barre latérale et le second volet sont masqués par la classe `solo`.
   if (SOLO) {
     document.body.classList.add('solo');
     try {
-      await openConv(SOLO);
+      await openConv(SOLO, null, { fromRoute: true });
     } catch {
       // Conversation supprimée entre l'ouverture du volet et son chargement. Mieux vaut le
       // dire que laisser l'écran de création apparaître dans un volet qu'on n'a pas demandé.
@@ -8422,6 +8640,13 @@ function connect() {
   if (savedPane && state.convs.some((c) => c.id === savedPane)) openPaneB(savedPane);
   else if (savedPane) PREFS.write('paneB', null);
 
-  if (state.convs.length) openConv(state.convs[0].id);
-  else showNew();
+  appReady = true;
+  const initialRoute = pendingRoute ||
+    (window.AgentHubNavigation ? window.AgentHubNavigation.current() : null);
+  pendingRoute = null;
+  if (initialRoute) {
+    if (window.AgentHubNavigation) window.AgentHubNavigation.replace(initialRoute, { silent: true });
+    applyRoute(initialRoute);
+  } else if (state.convs.length) openConv(state.convs[0].id, null, { replace: true });
+  else showNew({ replace: true });
 })();

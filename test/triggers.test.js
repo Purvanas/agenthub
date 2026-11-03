@@ -103,7 +103,7 @@ test('une fréquence inconnue est une erreur, pas une échéance improvisée', (
 const base = {
   name: 'Veille',
   provider: 'claude',
-  cwd: '.',
+  cwd: '/srv/projects/demo-app',
   prompt: 'Regarde les logs',
   frequency: 'daily',
   hour: 7,

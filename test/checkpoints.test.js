@@ -24,7 +24,7 @@ test('le dossier de données est repéré quand il est sous le dossier suivi', (
 });
 
 test("il est ignoré quand il est ailleurs, ce qui est le cas courant", () => {
-  assert.equal(checkpoints.dataRelative('/tmp/autre-projet'), null);
+  assert.equal(checkpoints.dataRelative('/var/www/autre-projet'), null);
   assert.equal(checkpoints.dataRelative(path.join(ROOT, 'sous-dossier')), null);
 });
 
@@ -42,7 +42,7 @@ test('le motif ajouté est ancré à la racine du work-tree', () => {
 });
 
 test("un projet ordinaire garde exactement la liste d'origine", () => {
-  assert.deepEqual(checkpoints.excludesFor('/tmp/autre-projet'), checkpoints.EXCLUDES);
+  assert.deepEqual(checkpoints.excludesFor('/var/www/autre-projet'), checkpoints.EXCLUDES);
 });
 
 test('un dossier de travail confondu avec les données exclut tout', () => {

@@ -101,4 +101,34 @@ test('oublier une conversation la retire de la mémoire de recherche', () => {
   assert.equal(search.search('éphémère', convs, fileOf).results.length, 0);
 });
 
+test('le cache LRU respecte son plafond sans tronquer les conversations trop grosses', () => {
+  const bounded = search.createSearch({ maxCacheBytes: 500 });
+  write('c8', [{ id: 'r1', kind: 'text', text: 'première conversation en cache' }]);
+  write('c9', [{ id: 's1', kind: 'text', text: 'seconde conversation en cache' }]);
+
+  assert.equal(
+    bounded.search('première', [{ id: 'c8', title: 'Première' }], fileOf).results.length,
+    1
+  );
+  assert.equal(
+    bounded.search('seconde', [{ id: 'c9', title: 'Seconde' }], fileOf).results.length,
+    1
+  );
+  assert.ok(bounded.cacheInfo().bytes <= bounded.cacheInfo().maxBytes);
+  assert.equal(bounded.cacheInfo().conversations, 1, 'la moins récente doit être évincée');
+
+  const uncached = search.createSearch({ maxCacheBytes: 1 });
+  assert.equal(
+    uncached.search('première', [{ id: 'c8', title: 'Première' }], fileOf).results.length,
+    1,
+    'dépasser le cache ne doit jamais retirer du contenu cherchable'
+  );
+  assert.deepEqual(uncached.cacheInfo(), { conversations: 0, bytes: 0, maxBytes: 1 });
+
+  write('vide', []);
+  const empty = search.createSearch({ maxCacheBytes: 500 });
+  empty.search('absent', [{ id: 'vide', title: 'Vide' }], fileOf);
+  assert.equal(empty.cacheInfo().conversations, 0, 'les journaux vides ne gonflent pas la Map');
+});
+
 test.after(() => fs.rmSync(DIR, { recursive: true, force: true }));

@@ -77,6 +77,95 @@ test('un chemin dans le projet est accepte, et seulement pour une extension conn
   }
 });
 
+test('un document symlinké hors du projet ne peut être ni lu ni écrit', () => {
+  const root = project({ 'docs/plans/local.md': '# local' });
+  const outside = path.join(os.tmpdir(), `agenthub-secret-${Date.now()}.md`);
+  fs.writeFileSync(outside, '# secret');
+  const link = path.join(root, 'docs', 'plans', 'secret.md');
+  fs.symlinkSync(outside, link, 'file');
+  try {
+    assert.equal(plans.resolve(root, 'docs/plans/secret.md'), null);
+    assert.equal(plans.read(root, 'docs/plans/secret.md'), null);
+    assert.throws(() => plans.write(root, 'docs/plans/secret.md', '# écrasé'), /hors du projet/);
+    assert.equal(fs.readFileSync(outside, 'utf8'), '# secret');
+  } finally {
+    fs.rmSync(outside, { force: true });
+  }
+});
+
+test('un ancien nom temporaire piégé ne reçoit jamais le contenu édité', () => {
+  const root = project({ 'docs/plans/a.md': '# avant' });
+  const outside = path.join(os.tmpdir(), `agenthub-temp-secret-${Date.now()}.md`);
+  fs.writeFileSync(outside, '# extérieur');
+  const planted = path.join(root, 'docs', 'plans', 'a.md.agenthub.tmp');
+  fs.symlinkSync(outside, planted, 'file');
+  try {
+    plans.write(root, 'docs/plans/a.md', '# après');
+    assert.equal(fs.readFileSync(path.join(root, 'docs/plans/a.md'), 'utf8'), '# après');
+    assert.equal(fs.readFileSync(outside, 'utf8'), '# extérieur');
+  } finally {
+    fs.rmSync(outside, { force: true });
+  }
+});
+
+test('une version ancienne refuse d écraser une édition plus récente', () => {
+  const root = project({ 'docs/plans/a.md': '# première version' });
+  const opened = plans.read(root, 'docs/plans/a.md');
+  fs.writeFileSync(path.join(root, 'docs/plans/a.md'), '# édition concurrente');
+
+  assert.throws(
+    () => plans.write(root, 'docs/plans/a.md', '# écrasement', { expectedVersion: opened.version }),
+    (err) => err && err.statusCode === 409
+  );
+  assert.equal(fs.readFileSync(path.join(root, 'docs/plans/a.md'), 'utf8'), '# édition concurrente');
+});
+
+test('la version courante autorise l écriture et change après sauvegarde', () => {
+  const root = project({ 'docs/plans/a.md': '# avant' });
+  const opened = plans.read(root, 'docs/plans/a.md');
+  const saved = plans.write(root, 'docs/plans/a.md', '# après', {
+    expectedVersion: opened.version,
+  });
+
+  assert.equal(saved.content, '# après');
+  assert.notEqual(saved.version, opened.version);
+});
+
+test('les anciens appelants peuvent encore écrire sans fournir de version', () => {
+  const root = project({ 'docs/plans/a.md': '# avant' });
+  const saved = plans.write(root, 'docs/plans/a.md', '# compatible');
+  assert.equal(saved.content, '# compatible');
+  assert.match(saved.version, /^[0-9a-f]{64}$/);
+});
+
+test('une sauvegarde conserve les permissions du document existant', () => {
+  const root = project({ 'docs/plans/a.md': '# avant' });
+  const file = path.join(root, 'docs/plans/a.md');
+  fs.chmodSync(file, 0o640);
+  plans.write(root, 'docs/plans/a.md', '# après');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o640);
+});
+
+test('le temporaire atomique est un fichier régulier et jamais un lien', () => {
+  const root = project({ 'docs/plans/a.md': '# avant' });
+  const file = path.join(root, 'docs/plans/a.md');
+  const originalRename = fs.renameSync;
+  let temporary = null;
+  fs.renameSync = (from, to) => {
+    if (to === file) {
+      const stat = fs.lstatSync(from);
+      temporary = { file: stat.isFile(), symlink: stat.isSymbolicLink() };
+    }
+    return originalRename(from, to);
+  };
+  try {
+    plans.write(root, 'docs/plans/a.md', '# après');
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  assert.deepEqual(temporary, { file: true, symlink: false });
+});
+
 // Le préfixe doit inclure le séparateur, sinon un dossier voisin dont le nom commence pareil
 // passe pour un enfant.
 test('un dossier voisin au nom proche ne passe pas pour un enfant', () => {
@@ -381,7 +470,7 @@ test('sans projet, le prompt n ajoute rien', () => {
 // --- Cas dégradés ---------------------------------------------------------
 
 test('un projet qui n existe pas rend une liste vide, sans lever', () => {
-  assert.deepEqual(plans.list('/tmp/aucun-projet-de-ce-nom'), []);
+  assert.deepEqual(plans.list('/var/www/aucun-projet-de-ce-nom'), []);
   assert.deepEqual(plans.list(null), []);
 });
 
@@ -390,17 +479,17 @@ test('lire un document absent rend null', () => {
 });
 
 test('un projet se retrouve depuis une conversation isolee par son depot principal', () => {
-  assert.equal(plans.projectOf({ cwd: '.' }), '.');
+  assert.equal(plans.projectOf({ cwd: '/srv/projects/demo-app' }), '/srv/projects/demo-app');
   // Le worktree porte les fichiers, mais les plans du projet sont ceux du projet : sinon
   // chaque branche aurait son jeu de plans.
   assert.equal(
-    plans.projectOf({ cwd: './data/worktrees/x', worktree: { repo: '.' } }),
-    '.'
+    plans.projectOf({ cwd: '/srv/projects/demo-app/data/worktrees/x', worktree: { repo: '/srv/projects/demo-app' } }),
+    '/srv/projects/demo-app'
   );
   assert.equal(plans.projectOf(null), null);
 });
 
 test('une barre finale ne change pas la cle du projet', () => {
-  assert.equal(plans.key('./'), '.');
-  assert.equal(plans.key('.'), '.');
+  assert.equal(plans.key('/srv/projects/demo-app/'), '/srv/projects/demo-app');
+  assert.equal(plans.key('/srv/projects/demo-app'), '/srv/projects/demo-app');
 });

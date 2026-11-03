@@ -38,9 +38,9 @@ function ledger(rows) {
 
 /** Résolution comme le serveur la fournit : le projet, le titre, le fournisseur. */
 const RESOLVE = {
-  'c-hub': { project: '.', title: 'refonte', provider: 'claude' },
-  'c-hub-2': { project: '.', title: 'quotas', provider: 'codex' },
-  'c-site': { project: '/tmp/site', title: 'landing', provider: 'grok' },
+  'c-hub': { project: '/srv/projects/demo-app', title: 'refonte', provider: 'claude' },
+  'c-hub-2': { project: '/srv/projects/demo-app', title: 'quotas', provider: 'codex' },
+  'c-site': { project: '/var/www/site', title: 'landing', provider: 'grok' },
 };
 const resolve = (id) => RESOLVE[id] || null;
 
@@ -56,8 +56,8 @@ test('le cout se regroupe par projet, worktrees replies', () => {
   assert.deepEqual(
     projects.map((p) => [p.project, p.costUsd, p.convs]),
     [
-      ['.', 3, 2],
-      ['/tmp/site', 0.5, 1],
+      ['/srv/projects/demo-app', 3, 2],
+      ['/var/www/site', 0.5, 1],
     ]
   );
 });
@@ -66,7 +66,7 @@ test('le cout se regroupe par projet, worktrees replies', () => {
 // projet, et c'est le cas majoritaire — 122 des 125 conversations du journal réel.
 test('le projet ecrit sur la ligne prime sur le magasin', () => {
   ledger([
-    { ...line('2026-08-03T10:00:00.000Z', 'effacee', 'claude', 7), project: '/tmp/site' },
+    { ...line('2026-08-03T10:00:00.000Z', 'effacee', 'claude', 7), project: '/var/www/site' },
     // Le magasin ne connaît `c-hub` que par `resolve` : la ligne n'a pas de projet, donc on
     // remonte à la conversation. C'est le comportement des lignes écrites avant le champ.
     line('2026-08-03T11:00:00.000Z', 'c-hub', 'claude', 1),
@@ -74,8 +74,8 @@ test('le projet ecrit sur la ligne prime sur le magasin', () => {
   assert.deepEqual(
     usage.dashboard({ resolve }).projects.map((p) => [p.project, p.costUsd]),
     [
-      ['/tmp/site', 7],
-      ['.', 1],
+      ['/var/www/site', 7],
+      ['/srv/projects/demo-app', 1],
     ]
   );
 });
@@ -175,7 +175,7 @@ test('un mois choisi borne tout le tableau', () => {
   const board = usage.dashboard({ month: '2026-08', resolve });
   assert.deepEqual(
     board.projects.map((p) => p.project),
-    ['/tmp/site']
+    ['/var/www/site']
   );
   assert.equal(board.top.length, 1);
 });

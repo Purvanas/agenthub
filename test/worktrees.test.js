@@ -190,6 +190,29 @@ test('retirer un worktree vide emporte sa branche, un worktree qui a travaille l
   assert.match(await git(repo, 'branch', '--list'), /agenthub\/plein123/);
 });
 
+test('retirer une conversation conserve le worktree et ses fichiers non commites', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'dirty123', cwd: repo });
+  fs.writeFileSync(path.join(wt.path, 'a.txt'), 'modification importante\n');
+  fs.writeFileSync(path.join(wt.path, 'nouveau.txt'), 'nouveau fichier\n');
+  const kept = await worktrees.remove(wt);
+  assert.equal(kept.removed, false);
+  assert.equal(kept.reason, 'uncommitted');
+  assert.equal(fs.readFileSync(path.join(wt.path, 'a.txt'), 'utf8'), 'modification importante\n');
+  assert.equal(fs.readFileSync(path.join(wt.path, 'nouveau.txt'), 'utf8'), 'nouveau fichier\n');
+  assert.equal(await worktrees.branchExists(repo, wt.branch), true);
+});
+
+test('un chemin de retrait exterieur aux worktrees est refuse sans toucher aux fichiers', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'intact\n' });
+  const kept = await worktrees.remove({ repo, path: repo, branch: 'main' });
+  assert.equal(kept.removed, false);
+  assert.equal(kept.reason, 'invalid-path');
+  assert.equal(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), 'intact\n');
+});
+
 test('l instantane d un worktree n archive pas son lien .git', async () => {
   const { worktrees, dir } = fresh();
   delete require.cache[require.resolve('../lib/checkpoints')];
@@ -231,4 +254,88 @@ test('un worktree efface a la main se nettoie, et sa branche est reprise', async
   const recree = await worktrees.create({ convId: 'c1', cwd: repo });
   assert.equal(recree.reused, true);
   assert.equal(fs.readFileSync(path.join(recree.path, 'b.txt'), 'utf8'), 'du travail\n');
+});
+
+test('un dossier et une branche déjà disparus ne sont pas annoncés comme conservés', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'disparu1', cwd: repo });
+  fs.rmSync(wt.path, { recursive: true, force: true });
+  await git(repo, 'worktree', 'prune');
+  await git(repo, 'branch', '-D', wt.branch);
+
+  const removed = await worktrees.remove(wt);
+  assert.equal(removed.removed, true);
+  assert.equal(removed.branchKept, false);
+});
+
+test('l inventaire rattache les worktrees actifs à leurs conversations', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'active123', cwd: repo });
+  const rows = await worktrees.inventory({
+    conversations: [{ id: 'conv-active', cwd: wt.path, project: repo, branch: wt.branch }],
+    repos: [repo],
+  });
+  const row = rows.find((entry) => entry.branch === wt.branch);
+  assert.deepEqual(row.owners, ['conv-active']);
+  assert.equal(row.orphan, false);
+  assert.equal(row.exists, true);
+  assert.equal(row.path, wt.path);
+  await assert.rejects(
+    () => worktrees.resume(row, { convId: 'autreconv' }),
+    /appartient encore/
+  );
+});
+
+test('l inventaire retrouve un dossier sale après suppression de sa conversation', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'orphan12', cwd: repo });
+  fs.writeFileSync(path.join(wt.path, 'a.txt'), 'travail non commité\n');
+  await worktrees.remove(wt);
+
+  const rows = await worktrees.inventory();
+  const row = rows.find((entry) => entry.branch === wt.branch);
+  assert.equal(row.orphan, true);
+  assert.equal(row.exists, true);
+  assert.equal(row.state.dirty, 1);
+  assert.equal(row.canResume, true);
+});
+
+test('une branche conservée sans dossier reste visible et peut être reprise', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'branche1', cwd: repo });
+  fs.writeFileSync(path.join(wt.path, 'b.txt'), 'travail conservé\n');
+  await git(wt.path, 'add', '-A');
+  await git(wt.path, 'commit', '--quiet', '-m', 'travail');
+  await worktrees.remove(wt);
+
+  const row = (await worktrees.inventory({ repos: [repo] })).find(
+    (entry) => entry.branch === wt.branch
+  );
+  assert.equal(row.orphan, true);
+  assert.equal(row.exists, false);
+  assert.equal(row.state.ahead, 1);
+  assert.equal(row.canResume, true);
+
+  const resumed = await worktrees.resume(row, { convId: 'nouvelle1' });
+  assert.equal(worktrees.trustedPath(resumed.cwd), true);
+  assert.equal(resumed.worktree.branch, wt.branch);
+  assert.equal(fs.readFileSync(path.join(resumed.cwd, 'b.txt'), 'utf8'), 'travail conservé\n');
+});
+
+test('une branche orpheline se fusionne explicitement même sans dossier', async () => {
+  const { worktrees, dir } = fresh();
+  const repo = await repoWith(path.join(dir, 'projet'), { 'a.txt': 'un\n' });
+  const wt = await worktrees.create({ convId: 'merge123', cwd: repo });
+  fs.writeFileSync(path.join(wt.path, 'b.txt'), 'à fusionner\n');
+  await git(wt.path, 'add', '-A');
+  await git(wt.path, 'commit', '--quiet', '-m', 'travail');
+  await worktrees.remove(wt);
+
+  const done = await worktrees.merge({ ...wt, path: null });
+  assert.equal(done.commits, 1);
+  assert.equal(fs.readFileSync(path.join(repo, 'b.txt'), 'utf8'), 'à fusionner\n');
 });

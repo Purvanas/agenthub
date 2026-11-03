@@ -74,6 +74,14 @@ test('la vérification est refusée si elle ne dit pas ce qui manque', () => {
   assert.equal(goal.normalize(null), null);
 });
 
+test('une vérification contradictoire ne peut pas déclarer l objectif atteint', () => {
+  // Le booléen ne doit pas faire disparaître une tâche que la même réponse dit restante.
+  assert.equal(
+    goal.normalize({ done: true, remaining: 'le déploiement manque', summary: 'presque fini' }),
+    null
+  );
+});
+
 test('le premier prompt interdit de rendre la main pour demander un avis', () => {
   const prompt = goal.buildFirstPrompt('Passer tous les tests');
   assert.ok(prompt.includes('Passer tous les tests'));

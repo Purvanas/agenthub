@@ -118,3 +118,17 @@ test('un texte de plus de 2 Mo est refusé, le nom long garde son extension', ()
   assert.ok(saved[0].name.endsWith('.json'));
   assert.ok(saved[0].name.length <= 80);
 });
+
+test('le nettoyage refuse un dossier voisin dont le nom partage le même préfixe', () => {
+  const { uploads, dir } = fresh();
+  const inside = path.join(uploads.UPLOAD_DIR, CONV, 'dedans.png');
+  const sibling = path.join(dir, 'uploads-prive', 'dehors.png');
+  fs.mkdirSync(path.dirname(inside), { recursive: true });
+  fs.mkdirSync(path.dirname(sibling), { recursive: true });
+  fs.writeFileSync(inside, 'dedans');
+  fs.writeFileSync(sibling, 'dehors');
+
+  uploads.removeFiles([inside, sibling]);
+  assert.equal(fs.existsSync(inside), false);
+  assert.equal(fs.readFileSync(sibling, 'utf8'), 'dehors');
+});

@@ -44,3 +44,10 @@ Le symptôme, la cause, et ce qu'il faut faire à la place.
 Parce que c'est versionné avec le code qu'il décrit, que ça ne sort pas du serveur, que ça
 ne dépend d'aucune authentification qui expire, et que les trois CLIs le lisent déjà. Une
 note qui devient fausse se corrige dans le même commit que le code qui l'a rendue fausse.
+
+## Retours d'expérience à lire en premier
+
+- [Les conversations longues bloquaient l'ouverture sur mobile](les-conversations-longues-bloquaient-le-mobile.md) : pagination, index dérivé et chargement différé des résultats.
+- [Le fil entier était réécrit à chaque message](le-fil-entier-etait-reecrit-a-chaque-message.md) : passage à un journal JSONL en ajout.
+- [Reprendre un turn après redémarrage](reprendre-un-turn-apres-redemarrage.md) : flux fichier, curseur et processus survivant.
+- [La consommation comptait des cumuls et perdait des turns](la-consommation-comptait-des-cumuls-et-perdait-des-turns.md) : normalisation des métriques hétérogènes.

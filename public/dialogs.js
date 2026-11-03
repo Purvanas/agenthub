@@ -3,7 +3,7 @@
 // Fenêtres de décision et avis, à la place de `confirm`, `alert` et `prompt`.
 //
 // Les boîtes natives sont laides, non stylables, et surtout **bloquantes** : tant que
-// « 127.0.0.1 indique » est à l'écran, plus rien ne tourne dans la page — ni le flux
+// Une boîte « ce site indique » à l'écran suffit à tout arrêter dans la page — ni le flux
 // d'un turn en cours, ni le websocket qui pousse les avis, ni le rafraîchissement des
 // quotas. Sur un outil dont tout l'intérêt est de regarder des agents travailler,
 // arrêter la page pour demander « Supprimer ? » est le pire moment possible.
@@ -193,11 +193,19 @@ if (typeof document !== 'undefined') {
    * délai. `hide` est l'élément qui disparaît en attendant — la ligne supprimée — et qui
    * revient si on annule ; sans lui l'écran ne bougerait pas et l'avis mentirait.
    */
-  function undoToast({ message, run, hide, ms = UNDO_MS, undone }) {
+  function undoToast({ message, run, hide, ms = UNDO_MS, undone, completed }) {
     if (hide) hide.classList.add('vanishing');
-    const id = UNDO.push(run, { hide }, ms);
+    let notice;
+    const wrapped = completed
+      ? async () => {
+          const result = await run();
+          completed(result, notice);
+          return result;
+        }
+      : run;
+    const id = UNDO.push(wrapped, { hide }, ms);
 
-    toast(message, {
+    notice = toast(message, {
       kind: 'undo',
       ms,
       action: {
@@ -220,7 +228,7 @@ if (typeof document !== 'undefined') {
    * bouton d'annulation mènent tous à `cancelValue` : trois façons de dire non, et aucune
    * ne doit valider par accident.
    */
-  function openDialog({ title, body, bodyHtml, buildBody, buttons, cancelValue = null, focus }) {
+  function openDialog({ title, body, bodyHtml, buildBody, buttons, cancelValue = null, focus, validate }) {
     // Une seule à la fois : ouvrir la seconde par-dessus laisserait la première sans
     // réponse et son `await` en suspens pour toujours.
     if (openBox) openBox.settle(openBox.cancelValue);
@@ -254,10 +262,11 @@ if (typeof document !== 'undefined') {
 
     function settle(value) {
       if (openBox !== box) return;
+      if (value !== cancelValue && validate && validate(extra) === false) return;
       openBox = null;
       document.removeEventListener('keydown', onKey, true);
       root.remove();
-      if (wasFocused && wasFocused.focus) wasFocused.focus();
+      if (box.restoreFocus && wasFocused && wasFocused.focus) wasFocused.focus();
       done(value);
     }
 
@@ -293,7 +302,7 @@ if (typeof document !== 'undefined') {
     });
     document.addEventListener('keydown', onKey, true);
 
-    const box = { settle, cancelValue };
+    const box = { settle, cancelValue, restoreFocus: true };
     openBox = box;
     document.body.appendChild(root);
 
@@ -386,6 +395,13 @@ if (typeof document !== 'undefined') {
   // Exposée pour les modales qui ne rentrent dans aucun des trois moules ci-dessus — le
   // formulaire des prompts enregistrés en est une : une liste et un formulaire à trous.
   window.openDialog = openDialog;
+  // Une navigation rend la décision ouverte obsolète. La fermer sans rendre le focus à
+  // l'ancienne vue évite notamment de rouvrir le clavier tactile sur un champ désormais caché.
+  window.closeDialog = () => {
+    if (!openBox) return;
+    openBox.restoreFocus = false;
+    openBox.settle(openBox.cancelValue);
+  };
   window.toast = toast;
   window.toastError = toastError;
   window.undoToast = undoToast;

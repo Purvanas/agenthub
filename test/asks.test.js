@@ -30,6 +30,19 @@ test('une demande sans question est refusee', () => {
   assert.throws(() => asks.create({ question: 'et alors ?' }), /Conversation manquante/);
 });
 
+test('le plafond d historique ne supprime jamais une question encore en attente', () => {
+  const asks = fresh();
+  const waiting = asks.create({ convId: 'ancienne', question: 'Toujours là ?' });
+  for (let i = 0; i < 205; i += 1) {
+    const row = asks.create({ convId: `c-${i}`, question: `Q${i}` });
+    asks.answer(row.id, 'oui');
+  }
+
+  assert.equal(asks.get(waiting.id).status, 'pending');
+  assert.equal(asks.pendingFor('ancienne').id, waiting.id);
+  assert.ok(asks.list().length <= 200);
+});
+
 test('les options se donnent en tableau ou en chaine a barres', () => {
   const asks = fresh();
   assert.deepEqual(asks.parseOptions(['Oui', 'Non']), ['Oui', 'Non']);
@@ -125,6 +138,40 @@ test('repondre debloque l appel d outil suspendu', async () => {
   assert.equal(asks.hasWaiter(row.id), false);
 });
 
+test('une reponse deja recue ne repart pas dans une attente', async () => {
+  const asks = fresh();
+  const row = asks.create({ convId: 'c1', question: 'On supprime ?', mode: 'live' });
+  asks.answer(row.id, 'Non');
+
+  const got = await asks.waitFor(row.id, 5000);
+  assert.equal(got.answer, 'Non');
+  assert.equal(asks.hasWaiter(row.id), false);
+});
+
+test('deux consommateurs partagent la meme attente', async () => {
+  const asks = fresh();
+  const row = asks.create({ convId: 'c1', question: 'Alors ?', mode: 'live' });
+  const first = asks.waitFor(row.id, 5000);
+  const second = asks.waitFor(row.id, 5000);
+
+  asks.answer(row.id, 'Oui');
+  assert.equal((await first).answer, 'Oui');
+  assert.equal((await second).answer, 'Oui');
+});
+
+test('expirer ou oublier une demande libere son appel suspendu', async () => {
+  const asks = fresh();
+  const expired = asks.create({ convId: 'c1', question: 'Q1', mode: 'live' });
+  const expiredWait = asks.waitFor(expired.id, 5000);
+  asks.expire(expired.id);
+  assert.equal(await expiredWait, null);
+
+  const forgotten = asks.create({ convId: 'c2', question: 'Q2', mode: 'live' });
+  const forgottenWait = asks.waitFor(forgotten.id, 5000);
+  asks.forget('c2');
+  assert.equal(await forgottenWait, null);
+});
+
 test('une attente non satisfaite expire et rend la main', async () => {
   const asks = fresh();
   const row = asks.create({ convId: 'c1', question: 'Alors ?', mode: 'live' });
@@ -133,6 +180,30 @@ test('une attente non satisfaite expire et rend la main', async () => {
   assert.equal(await asks.waitFor(row.id, 20), null);
   assert.equal(asks.get(row.id).status, 'expired');
   assert.equal(asks.list('pending').length, 0);
+});
+
+test('une erreur disque pendant l expiration ne bloque pas le waiter et ne sort pas du timer', async () => {
+  const asks = fresh();
+  const row = asks.create({ convId: 'c1', question: 'Alors ?', mode: 'live' });
+  const originalWrite = fs.writeFileSync;
+  const originalError = console.error;
+  const errors = [];
+  fs.writeFileSync = (file, ...args) => {
+    if (file === `${asks.FILE}.tmp`) throw new Error('disque indisponible');
+    return originalWrite(file, ...args);
+  };
+  console.error = (message) => errors.push(String(message));
+
+  try {
+    assert.equal(await asks.waitFor(row.id, 20), null);
+    assert.equal(asks.hasWaiter(row.id), false);
+    assert.match(errors.join('\n'), /disque indisponible/);
+    // La persistance a échoué : l'état reste pending, mais l'appel d'outil a bien été libéré.
+    assert.equal(asks.get(row.id).status, 'pending');
+  } finally {
+    fs.writeFileSync = originalWrite;
+    console.error = originalError;
+  }
 });
 
 test('une seconde question libere l appel suspendu sur la premiere', async () => {
@@ -152,14 +223,16 @@ test('le plafond d attente reste sous le mur de cinq minutes des CLIs', () => {
   assert.ok(asks.WAIT_MS + asks.CLI_MARGIN_MS < 5 * 60 * 1000);
 });
 
-test('un redemarrage ferme les attentes que personne ne tient plus', () => {
+test('un redemarrage ferme les attentes que personne ne tient plus', async () => {
   const asks = fresh();
   const live = asks.create({ convId: 'c1', question: 'Q1', mode: 'live' });
   const turn = asks.create({ convId: 'c2', question: 'Q2' });
+  const waiting = asks.waitFor(live.id, 5000);
 
   assert.equal(asks.dropWaiters(), 1);
   // La question `live` ne débloquerait plus rien : elle est fermée. La `turn`, elle, se
   // répond toujours — c'est justement la retombée.
   assert.equal(asks.get(live.id).status, 'expired');
   assert.equal(asks.get(turn.id).status, 'pending');
+  assert.equal(await waiting, null);
 });

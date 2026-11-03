@@ -58,7 +58,21 @@ const sessions = require('./lib/sessions');
 const accounts = require('./lib/accounts');
 const login = require('./lib/login');
 const gallery = require('./lib/gallery');
-const search = require('./lib/search');
+const { SearchService } = require('./lib/search-service');
+const { registerConnectionsRoutes } = require('./lib/http/connections');
+const { registerFolderRoutes } = require('./lib/http/folders');
+const { registerPlanRoutes, registerProjectKnowledgeRoutes } = require('./lib/http/project-assets');
+const { createSettingsChecks, registerSettingsRoutes } = require('./lib/http/settings');
+const searchService = new SearchService({
+  fileOf: (id) => store.itemsFile(id), indexDir: path.join(store.DATA_DIR, 'indexes'),
+});
+const workspaceModule = require('./lib/workspace');
+const budgets = require('./lib/budgets');
+const { createRoutes: workspaceRoutes } = require('./lib/workspace-routes');
+const conversationView = require('./lib/conversation-view');
+const { prepareTurn } = require('./lib/turn-preparation');
+const { orderQueue } = require('./lib/queue-order');
+const { createQueuedDispatcher } = require('./lib/queued-dispatch');
 const notify = require('./lib/notify');
 const settings = require('./lib/settings');
 const scheduler = require('./lib/scheduler');
@@ -72,14 +86,16 @@ const {
 const inflight = require('./lib/inflight');
 const silence = require('./lib/silence');
 const grokCatalog = require('./lib/grok-catalog');
+const modelSelection = require('./lib/model-selection');
 
 const MODELS_FILE = path.join(__dirname, 'config', 'models.json');
 
 const PORT = Number(process.env.PORT || 3901);
-// Bind local par défaut : l'app exécute du code arbitraire.
+// Boucle locale par défaut : l'app exécute du code arbitraire et ne doit jamais être
+// exposée par accident. Une adresse VPN explicite peut être fournie avec HOST.
 const HOST = process.env.HOST || '127.0.0.1';
 // Base de l'URL mise dans les notifications, pour qu'elles soient cliquables. Une valeur
-// dans config/notify.json la remplace : le bind n'est pas toujours le meilleur nom.
+// dans config/notify.json la remplace : l'adresse d'écoute n'est pas toujours le meilleur nom.
 const APP_URL = `http://${HOST}:${PORT}`;
 
 const PROVIDERS = new Set(['claude', 'codex', 'grok']);
@@ -170,6 +186,18 @@ function reconcileOnBoot() {
 }
 
 const app = express();
+// Express 4 ne transmet pas tout seul les rejets des gestionnaires async.
+const asyncRoute = (handler) => (req, res, next) => {
+  Promise.resolve().then(() => handler(req, res, next)).catch(next);
+};
+app.param('id', (req, res, next, id) => {
+  // Express décode aussi les barres %2f : aucun identifiant ne doit devenir un chemin
+  // avant d'atteindre les helpers de fichiers (suppression comprise).
+  if (!store.isSafeId(id)) {
+    return res.status(400).json({ error: 'Identifiant invalide' });
+  }
+  next();
+});
 // Les images arrivent en data URL dans le corps JSON : 5 images de 10 Mo au plus,
 // et le base64 gonfle d'un tiers.
 app.use(express.json({ limit: '80mb' }));
@@ -216,11 +244,41 @@ wss.on('error', (err) => {
   console.error(`websocket : ${err.message}`);
 });
 
-function broadcast(msg) {
-  const payload = JSON.stringify(msg);
+const CONVERSATION_STREAM = new Set(['item', 'itemUpdate', 'delta']);
+
+function sendAll(payload) {
   for (const client of wss.clients) {
     if (client.readyState === 1) client.send(payload);
   }
+}
+
+function broadcast(msg) {
+  // Les gros événements d'un fil ne servent qu'aux onglets qui regardent ce fil. Les envoyer
+  // à tous les téléphones multipliait le trafic et la mémoire tampon WebSocket, notamment sur
+  // les sorties d'outils. L'activité légère reste globale pour rafraîchir la sidebar.
+  if (msg && msg.convId && CONVERSATION_STREAM.has(msg.type)) {
+    if (msg.type === 'item' || msg.type === 'itemUpdate') {
+      sendAll(
+        JSON.stringify({
+          type: 'activity',
+          convId: msg.convId,
+          updatedAt: new Date().toISOString(),
+        })
+      );
+    }
+
+    const outgoing =
+      msg.type === 'item' || msg.type === 'itemUpdate'
+        ? { ...msg, item: conversationView.projectItem(msg.item) }
+        : msg;
+    const payload = JSON.stringify(outgoing);
+    for (const client of wss.clients) {
+      if (client.readyState === 1 && client.agentHubConvId === msg.convId) client.send(payload);
+    }
+    return;
+  }
+
+  sendAll(JSON.stringify(msg));
 }
 
 // --- Turns en cours -------------------------------------------------------
@@ -231,6 +289,15 @@ function broadcast(msg) {
  * @type {Map<string, {child: import('child_process').ChildProcess|null, stopped: boolean}>}
  */
 const running = new Map();
+
+function selectionState(conv, active) {
+  if (!conv) return null;
+  const entry = running.get(conv.id);
+  return modelSelection.state(
+    conv,
+    active === undefined ? (entry && entry.modelSelection) || null : active
+  );
+}
 
 /**
  * Minuteurs de durée maximale des exécutions de déclencheurs, par conversation. Armés au
@@ -264,9 +331,17 @@ function queueDelta(convId, text, kind) {
   }, 60);
 }
 
-function setStatus(convId, status) {
+function setStatus(convId, status, activeSelection) {
   const conv = store.update(convId, { status });
-  if (conv) broadcast({ type: 'status', convId, status, updatedAt: conv.updatedAt });
+  if (conv) {
+    broadcast({
+      type: 'status',
+      convId,
+      status,
+      updatedAt: conv.updatedAt,
+      modelSelection: selectionState(conv, activeSelection),
+    });
+  }
   // Un turn signalé muet qui s'achève : le signal doit tomber avec lui, sans attendre le
   // balayage suivant. Le cas est rare, et la vérification ne coûte qu'une comparaison.
   if (status !== 'working' && silentTurns.some((t) => t.convId === convId)) sweepSilence();
@@ -342,41 +417,74 @@ function dequeue(conv, id) {
  * L'instantané est asynchrone : sur un gros dépôt le premier prend plusieurs
  * secondes, et le faire en synchrone gelait toute l'app.
  */
-async function dispatch(conv, text, saved, extra) {
+async function dispatch(conv, text, saved, extra, lifecycle) {
   // Relevé avant l'ajout : c'est le premier message qui donne son nom à la conversation, et
   // dans une seconde il ne sera plus le seul.
   const isFirst = !(conv.items || []).some((it) => it.kind === 'user');
 
-  const checkpoint = await checkpoints.snapshot(conv, `avant : ${text.slice(0, 80)}`);
-  const item = store.addItem(conv.id, {
-    kind: 'user',
-    text,
-    images: (saved || []).map(({ url, name, kind }) => ({ url, name, kind })),
-    checkpoint,
-    // Marque d'un message que l'application a rédigé — la consigne d'un tour d'objectif. Le
-    // fil la replie : elle est longue, toujours la même, et ce n'est pas l'utilisateur qui
-    // l'a écrite. Elle reste visible, comme la demande de rapport.
-    ...(extra || {}),
-  });
-  broadcast({ type: 'item', convId: conv.id, item });
-  // L'objet entier, pas seulement le chemin : le prompt nomme le fichier comme
-  // l'utilisateur l'a envoyé, et distingue une image d'un texte.
-  startTurn(conv, text, saved || []);
+  return prepareTurn({
+    id: conv.id,
+    running,
+    exists: () => Boolean(store.get(conv.id)),
+    prepare: async () => {
+      setStatus(conv.id, 'working');
+      return checkpoints.snapshot(conv, `avant : ${text.slice(0, 80)}`);
+    },
+    onCancel: () => setStatus(conv.id, 'stopped'),
+    onError: () => {
+      setStatus(conv.id, 'error');
+      // Le premier turn n'a jamais été accepté : laisser l'objectif armé ferait prendre le
+      // prochain message ordinaire pour la suite d'une boucle qui n'a pas commencé.
+      if (extra && extra.goal === 'start') setGoal(conv.id, null);
+    },
+    start: (checkpoint, reservation) => {
+      const item = store.addItem(conv.id, {
+        kind: 'user',
+        text,
+        images: (saved || []).map(({ url, name, kind }) => ({ url, name, kind })),
+        checkpoint,
+        // Marque d'un message que l'application a rédigé — la consigne d'un tour d'objectif. Le
+        // fil la replie : elle est longue, toujours la même, et ce n'est pas l'utilisateur qui
+        // l'a écrite. Elle reste visible, comme la demande de rapport.
+        ...(extra || {}),
+      });
+      broadcast({ type: 'item', convId: conv.id, item });
+      // À partir d'ici le message est dans le fil. Un message auparavant en file ne doit plus
+      // y être restauré si le spawn échoue : ce serait le montrer deux fois au prochain essai.
+      if (lifecycle && lifecycle.onAccepted) lifecycle.onAccepted(item);
+      // L'objet entier, pas seulement le chemin : le prompt nomme le fichier comme
+      // l'utilisateur l'a envoyé, et distingue une image d'un texte.
+      startTurn(conv, text, saved || [], undefined, reservation);
 
-  // Le titrage part en parallèle du travail, sans l'attendre : il a son propre process, et le
-  // nom doit apparaître dans la barre latérale tout de suite, pas à la fin du turn. Hors
-  // requête HTTP à ce stade — personne pour recevoir un rejet, on journalise.
-  // Ce qui nomme, c'est ce que l'utilisateur a demandé — pas l'enveloppe que l'application a
-  // écrite autour. Un premier tour d'objectif porte donc son objectif, pas sa consigne de boucle.
-  if (isFirst && conv.titleAuto !== false) {
-    nameConversation(conv, (extra && extra.goalText) || text).catch((err) =>
-      console.error(`titrage impossible pour ${conv.id} : ${err.message}`)
-    );
-  }
-  return item;
+      // Le titrage part en parallèle du travail, sans l'attendre : il a son propre process, et le
+      // nom doit apparaître dans la barre latérale tout de suite, pas à la fin du turn. Hors
+      // requête HTTP à ce stade — personne pour recevoir un rejet, on journalise.
+      // Ce qui nomme, c'est ce que l'utilisateur a demandé — pas l'enveloppe que l'application a
+      // écrite autour. Un premier tour d'objectif porte donc son objectif, pas sa consigne de boucle.
+      if (isFirst && conv.titleAuto !== false) {
+        nameConversation(conv, (extra && extra.goalText) || text).catch((err) =>
+          console.error(`titrage impossible pour ${conv.id} : ${err.message}`)
+        );
+      }
+      return item;
+    },
+  });
 }
 
 /**
+ * Lance un message déjà en file sans le perdre pendant l'instantané asynchrone.
+ *
+ * Il est retiré immédiatement pour empêcher une édition concurrente. Si la préparation est
+ * annulée ou échoue avant que le message rejoigne le fil, il retrouve sa position. Une fois
+ * accepté, une erreur de spawn reste visible dans le fil et ne doit surtout pas le dupliquer.
+ */
+const { dispatchQueued } = createQueuedDispatcher({
+  store,
+  broadcastQueue,
+  dequeue,
+  dispatch,
+});
+
 /**
  * Construit les gestionnaires d'un turn, sans le lancer.
  *
@@ -386,7 +494,16 @@ async function dispatch(conv, text, saved, extra) {
  *
  * @returns {{handlers: object, done: Promise}}
  */
-function buildTurn(conv, options) {
+function buildTurn(conv, options, originalStartedAt, activeSelection) {
+  // À la reprise, le turn n'a pas recommencé avec agentHub : le CLI a continué pendant le
+  // redémarrage. Repartir de Date.now() ferait disparaître toute cette durée du relevé final.
+  const suppliedStart = Number(originalStartedAt);
+  const turnStartedAt = Number.isFinite(suppliedStart) && suppliedStart > 0
+    ? suppliedStart
+    : Date.now();
+  const turnSelection = activeSelection || modelSelection.snapshot(conv, {
+    startedAt: new Date(turnStartedAt).toISOString(),
+  });
   // Valeurs à masquer dans tout ce que l'agent produira. Relevées une fois au démarrage du
   // turn plutôt qu'à chaque item : le fichier ne bouge pas pendant un turn, et le faire à
   // chaque ligne de sortie coûterait une lecture disque par chunk.
@@ -405,6 +522,11 @@ function buildTurn(conv, options) {
     settle = resolve;
   });
   let structured = null;
+  let turnModelEvidence = null;
+  // Codex peut produire un résultat d'erreur puis `turn.failed`; un fatal peut aussi être
+  // suivi du relevé partiel reconstitué. La durée appartient au turn et ne doit être écrite
+  // qu'une fois, même si les tokens de chaque résultat restent tous journalisés.
+  let durationJournalized = false;
 
   // Un même message arrive souvent plusieurs fois (Codex émet `error` puis
   // `turn.failed`, et le process sort ensuite en code non nul). On l'affiche une
@@ -449,20 +571,32 @@ function buildTurn(conv, options) {
       const item = secrets.redactDeep(rawItem, masked);
 
       if (item.kind === 'result') {
+        if (!(Number(item.durationMs) > 0)) item.durationMs = Date.now() - turnStartedAt;
+        const active = running.get(conv.id);
         if (item.structuredOutput) structured = item.structuredOutput;
+        const usageItem = durationJournalized ? { ...item, durationMs: 0 } : item;
         const journalized = usage.record({
           provider: conv.provider,
           convId: conv.id,
-          item,
-          fallbackModel: conv.model,
+          item: usageItem,
+          fallbackModel: turnSelection.launchedModel,
           triggerId: conv.triggerId || null,
           // Le dépôt, et non le worktree : sinon chaque branche isolée compterait comme un
           // projet à elle. Écrit sur la ligne pour que le coût survive à la conversation.
           project: notes.projectOf(conv),
         });
+        if (Number(usageItem.durationMs) > 0) durationJournalized = true;
+        if (active) active.usageFinalized = true;
         const patch = {};
-        const lastModels = usage.billedModels(conv.provider, item, conv.model);
-        if (lastModels.length) patch.lastModels = lastModels;
+        turnModelEvidence = modelSelection.mergeLast(
+          turnModelEvidence,
+          modelSelection.lastFromResult(item, turnSelection)
+        );
+        const lastModelSelection = turnModelEvidence;
+        // `lastModels` reste pour les anciens clients, mais sa provenance explicite vit à
+        // côté : aucun défaut de pricing n'est désormais présenté comme une mesure du CLI.
+        patch.lastModels = lastModelSelection.models;
+        patch.lastModelSelection = lastModelSelection;
         // Le coût du turn : celui du fournisseur s'il le chiffre, sinon la somme des lignes
         // qu'on vient d'écrire. Ce repli est le seul chiffre dont disposent Codex, qui ne
         // chiffre jamais rien, et un turn coupé avant son relevé final — sans lui, une
@@ -510,6 +644,7 @@ function buildTurn(conv, options) {
             durationMs: item.durationMs,
             numTurns: item.numTurns,
             ...patch,
+            modelSelection: selectionState(conv, turnSelection),
           });
           return null;
         }
@@ -616,7 +751,10 @@ function buildTurn(conv, options) {
       // relit. Sans ce drapeau, il enchaînerait sur lui-même — une leçon tirée d'un turn dont
       // le seul fait notable est d'avoir tiré une leçon.
       const isMemory = Boolean((options || {}).isMemory);
-      const silent = isReport || isGoalCheck || isMemory;
+      // Une note de passation décrit le travail, elle ne le poursuit pas. En particulier,
+      // elle ne doit pas faire avancer un objectif actif ni déclencher une notification.
+      const isHandoff = Boolean((options || {}).isHandoff);
+      const silent = isReport || isGoalCheck || isMemory || isHandoff;
 
       // Messages mis en attente pendant que l'agent travaillait : le premier part
       // maintenant, et c'est à cet instant seulement qu'il rejoint le fil.
@@ -627,11 +765,11 @@ function buildTurn(conv, options) {
       // suivant, qui lui enchaîne normalement.
       let chained = false;
       if (fresh && (fresh.queue || []).length && !(entry && entry.stopped) && !isGoalCheck) {
-        const next = dequeue(fresh, null);
+        const next = fresh.queue[0];
         // Hors requête HTTP : personne pour recevoir un rejet, on le journalise.
         if (next) {
           chained = true;
-          dispatch(fresh, next.text, next.images).catch((err) =>
+          dispatchQueued(fresh, next).catch((err) =>
             console.error(`envoi du message en attente impossible : ${err.message}`)
           );
         }
@@ -733,11 +871,32 @@ function buildTurn(conv, options) {
  * @returns {Promise<{stopped: boolean, failed: boolean, code: number, stderr: string,
  *   structured: object|null}>}
  */
-function startTurn(conv, prompt, imagePaths, options) {
-  setStatus(conv.id, 'working');
-  const { handlers, done } = buildTurn(conv, options);
-  const child = runTurn(conv, prompt, handlers, imagePaths, options);
-  running.set(conv.id, { child, stopped: false });
+function startTurn(conv, prompt, imagePaths, options, reservation) {
+  if (running.has(conv.id) && running.get(conv.id) !== reservation) {
+    const err = new Error('Un turn est déjà en cours dans cette conversation.');
+    err.statusCode = 409;
+    throw err;
+  }
+  const selected = modelSelection.snapshot(conv);
+  // Le clone porte les arguments immuables du turn ; la conversation canonique reste
+  // modifiable pour que le sélecteur prépare le turn suivant pendant que celui-ci travaille.
+  const launched = {
+    ...conv,
+    model: selected.launchedModel,
+    effort: selected.launchedEffort,
+  };
+  setStatus(conv.id, 'working', selected);
+  const { handlers, done } = buildTurn(conv, options, undefined, selected);
+  const child = runTurn(launched, prompt, handlers, imagePaths, {
+    ...(options || {}),
+    modelSelection: selected,
+  });
+  running.set(conv.id, {
+    child,
+    stopped: false,
+    startedAt: Date.parse(selected.startedAt),
+    modelSelection: selected,
+  });
   return done;
 }
 
@@ -749,11 +908,30 @@ function startTurn(conv, prompt, imagePaths, options) {
  * d'interrompre depuis l'interface un turn qu'on a seulement retrouvé.
  */
 function resumeTurn(conv, record) {
-  setStatus(conv.id, 'working');
-  const { handlers } = buildTurn(conv, {});
-  const state = runnerResume(record, conv, handlers);
-  running.set(conv.id, { child: { pid: record.pid }, stopped: false });
-  return state;
+  // inflight.open écrit une date ISO. On la convertit une fois et on partage exactement la
+  // même origine entre le relevé final et la durée active exposée aux budgets.
+  const parsedStart = Date.parse(record.startedAt);
+  const startedAt = Number.isFinite(parsedStart) ? parsedStart : Date.now();
+  const selected = modelSelection.restore(record, conv, {
+    startedAt: new Date(startedAt).toISOString(),
+  });
+  setStatus(conv.id, 'working', selected);
+  const { handlers } = buildTurn(conv, {}, startedAt, selected);
+  const active = {
+    child: { pid: record.pid }, stopped: false,
+    startedAt,
+    modelSelection: selected,
+  };
+  // runnerResume draine immédiatement ce qui a été écrit pendant l'arrêt. L'entrée doit
+  // exister avant ce drain pour qu'un résultat déjà présent puisse marquer usageFinalized ;
+  // sinon le budget additionnerait provisoirement durée persistée et durée encore « active ».
+  running.set(conv.id, active);
+  try {
+    return runnerResume(record, conv, handlers);
+  } catch (err) {
+    if (running.get(conv.id) === active) running.delete(conv.id);
+    throw err;
+  }
 }
 
 // --- Turns hors fil -------------------------------------------------------
@@ -907,274 +1085,21 @@ app.get('/api/health', (req, res) => {
  * Remplace l'ancien test d'existence de fichier de `/api/health`, qui déclarait connecté
  * un compte dont le jeton était révoqué — le 401 n'apparaissait qu'au premier turn.
  */
-app.get('/api/accounts', async (req, res) => {
-  if (req.query.refresh) accounts.invalidate();
-  res.json({ accounts: await accounts.all(PROVIDERS) });
-});
-
-// --- Connexion des fournisseurs -------------------------------------------
-//
-// Sans terminal web : les trois CLIs s'authentifient sans TTY. Le serveur lance la
-// commande, en extrait l'URL et le code, et l'interface les affiche.
-
-function knownProvider(req, res) {
-  if (PROVIDERS.has(req.params.provider)) return true;
-  res.status(400).json({ error: 'Provider inconnu' });
-  return false;
-}
-
-/** L'état d'un flux change sans qu'on l'ait demandé : l'interface doit suivre. */
-function onLoginChange(provider, view) {
-  broadcast({ type: 'login', provider, login: view });
-  // Une connexion qui aboutit change l'état du compte : le cache doit sauter.
-  if (view.state === 'done') {
-    accounts.invalidate(provider);
-    accounts.get(provider).then((account) => {
-      broadcast({ type: 'account', provider, account });
-    });
-  }
-}
-
-app.get('/api/accounts/:provider/login', (req, res) => {
-  if (!knownProvider(req, res)) return;
-  res.json({ login: login.status(req.params.provider) });
-});
-
-app.post('/api/accounts/:provider/login', (req, res) => {
-  if (!knownProvider(req, res)) return;
-  try {
-    res.status(201).json({ login: login.start(req.params.provider, onLoginChange) });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/accounts/:provider/login/code', (req, res) => {
-  if (!knownProvider(req, res)) return;
-  try {
-    res.json({ login: login.submitCode(req.params.provider, (req.body || {}).code) });
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.delete('/api/accounts/:provider/login', (req, res) => {
-  if (!knownProvider(req, res)) return;
-  login.clear(req.params.provider);
-  res.json({ login: login.status(req.params.provider) });
-});
-
-app.post('/api/accounts/:provider/logout', async (req, res) => {
-  if (!knownProvider(req, res)) return;
-  const provider = req.params.provider;
-  try {
-    await login.logout(provider);
-  } catch (err) {
-    return res.status(502).json({ error: err.message });
-  }
-  login.clear(provider);
-  accounts.invalidate(provider);
-  const account = await accounts.get(provider);
-  broadcast({ type: 'account', provider, account });
-  res.json({ account });
-});
-
-// --- Navigateur humain du serveur -----------------------------------------
-//
-// Le profil est celui de Playwright MCP. L'utilisateur se connecte ici, puis ferme cette
-// fenetre : les agents retrouvent ensuite la session dans leur navigateur. Une seule session
-// humaine a la fois, parce qu'un profil Chromium ne peut pas etre ouvert deux fois.
-
-let activeAuthRequestId = null;
-
-function googleView() {
-  return {
-    config: googleOauth.publicConfiguration(),
-    accounts: googleOauth.accounts(),
-  };
-}
-
-app.get('/api/connections/google', (req, res) => {
-  res.json({ google: googleView() });
-});
-
-app.post('/api/connections/google/config', (req, res) => {
-  try {
-    googleOauth.configure(req.body || {});
-    const google = googleView();
-    broadcast({ type: 'google-accounts', google });
-    res.status(201).json({ google });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/connections/google/start', (req, res) => {
-  try {
-    res.status(201).json(googleOauth.begin());
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.get('/api/connections/google/callback', async (req, res) => {
-  let title = 'Compte Google connecte';
-  let message = 'Tu peux fermer cette fenetre et revenir dans agentHub.';
-  let ok = true;
-  try {
-    if (req.query.error) throw new Error(String(req.query.error));
-    await googleOauth.complete(req.query.code, req.query.state);
-    broadcast({ type: 'google-accounts', google: googleView() });
-  } catch (err) {
-    ok = false;
-    title = 'Connexion Google impossible';
-    message = err.message;
-  }
-  res.type('html').send(`<!doctype html><html lang="fr"><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>${title}</title><body style="font:16px system-ui;background:#1f1e1d;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0">
-    <main style="max-width:560px;padding:32px;text-align:center"><h1>${title}</h1>
-    <p style="color:${ok ? '#aaa' : '#ef8060'}">${String(message).replace(/[<&]/g, '')}</p>
-    <button onclick="window.close()" style="padding:10px 18px">Fermer</button></main></body></html>`);
-});
-
-app.post('/api/connections/google/api/:id', async (req, res) => {
-  try {
-    const upstream = await googleOauth.apiRequest(req.params.id, req.body || {});
-    res.status(upstream.status);
-    res.type(upstream.contentType || 'application/json').send(upstream.text);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.delete('/api/connections/google/:id', (req, res) => {
-  if (!googleOauth.disconnect(req.params.id)) {
-    return res.status(404).json({ error: 'Compte Google introuvable' });
-  }
-  const google = googleView();
-  broadcast({ type: 'google-accounts', google });
-  res.json({ google });
-});
-
-app.get('/api/connections/browser', async (req, res) => {
-  res.json({
-    browser: await remoteBrowser.state(),
-    requests: authRequests.list('pending'),
-    activeRequestId: activeAuthRequestId,
-  });
-});
-
-app.post('/api/connections/requests', (req, res) => {
-  const body = req.body || {};
-  if (!store.get(String(body.convId || ''))) {
-    return res.status(404).json({ error: 'Conversation inconnue' });
-  }
-  try {
-    const request = authRequests.create(body);
-    const notice = store.addItem(request.convId, {
-      kind: 'notice',
-      text: `${request.service} demande une connexion humaine : ${request.reason}`,
-      authRequestId: request.id,
-    });
-    if (notice) broadcast({ type: 'item', convId: request.convId, item: notice });
-    broadcast({ type: 'auth-request', request });
-    res.status(201).json({ request });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/connections/browser', async (req, res) => {
-  try {
-    const browser = await remoteBrowser.start((req.body || {}).url);
-    const requested = String((req.body || {}).requestId || '');
-    activeAuthRequestId = authRequests.list('pending').some((r) => r.id === requested)
-      ? requested
-      : null;
-    broadcast({ type: 'remote-browser', browser });
-    res.status(201).json({ browser });
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-// --- Regarder le navigateur de l'agent -------------------------------------
-//
-// À ne pas confondre avec `/api/connections/browser`, juste en dessous : celui-là est le
-// navigateur d'intervention humaine, une instance à part ouverte pour taper un mot de passe.
-// Ici, c'est la page que l'agent manipule en ce moment, vue à travers le service Playwright
-// qu'il utilise — leurs onglets sont partagés.
-
-app.get('/api/browser/live', async (req, res) => {
-  try {
-    res.json({ tab: await watchBrowser.where() });
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.get('/api/browser/live/frame', async (req, res) => {
-  try {
-    const shot = await watchBrowser.frame();
-    res.set('Cache-Control', 'no-store');
-    // Image resservie parce que l'agent tenait le navigateur : la vue le dit discrètement
-    // au lieu de laisser croire que la page est figée.
-    if (shot.stale) res.set('X-Frame-Stale', '1');
-    res.type(shot.mime).send(shot.buffer);
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.get('/api/connections/browser/frame', async (req, res) => {
-  try {
-    const frame = await remoteBrowser.screenshot();
-    res.set('Cache-Control', 'no-store');
-    res.type('jpg').send(frame);
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.post('/api/connections/browser/action', async (req, res) => {
-  const body = req.body || {};
-  try {
-    let browser;
-    if (body.action === 'navigate') browser = await remoteBrowser.navigate(body.url);
-    else if (body.action === 'click') browser = await remoteBrowser.click(body.x, body.y);
-    else if (body.action === 'type') browser = await remoteBrowser.type(body.text);
-    else if (body.action === 'key') browser = await remoteBrowser.key(body.key);
-    else if (body.action === 'scroll') browser = await remoteBrowser.scroll(body.deltaY);
-    else return res.status(400).json({ error: 'Action de navigateur inconnue' });
-    res.json({ browser });
-  } catch (err) {
-    res.status(409).json({ error: err.message });
-  }
-});
-
-app.delete('/api/connections/browser', async (req, res) => {
-  const browser = await remoteBrowser.close();
-  const request =
-    activeAuthRequestId && req.query.complete !== '0'
-      ? authRequests.resolve(activeAuthRequestId)
-      : null;
-  activeAuthRequestId = null;
-  broadcast({ type: 'remote-browser', browser });
-  if (request) {
-    const conv = store.get(request.convId);
-    if (conv) {
-      const prompt =
-        `La connexion humaine a ${request.service} vient d'etre terminee dans le navigateur ` +
-        `du serveur. Reprends maintenant ce qui etait bloque : ${request.reason}`;
-      if (running.has(conv.id)) enqueue(conv, prompt, null);
-      else dispatch(conv, prompt, null, { authResume: true }).catch((err) =>
-        console.error(`reprise apres connexion impossible : ${err.message}`)
-      );
-    }
-    broadcast({ type: 'auth-request-resolved', request });
-  }
-  res.json({ browser, request });
+registerConnectionsRoutes({
+  app,
+  asyncRoute,
+  providers: PROVIDERS,
+  accounts,
+  login,
+  googleOauth,
+  remoteBrowser,
+  authRequests,
+  watchBrowser,
+  store,
+  running,
+  enqueue,
+  dispatch,
+  broadcast,
 });
 
 // --- Demandes d'arbitrage --------------------------------------------------
@@ -1206,7 +1131,7 @@ function holdOpen(req, res) {
   if (req.socket) req.socket.setKeepAlive(true);
 }
 
-app.post(['/mcp', '/mcp/:convId'], async (req, res) => {
+app.post(['/mcp', '/mcp/:convId'], asyncRoute(async (req, res) => {
   holdOpen(req, res);
   const convId = req.params.convId || null;
   const body = req.body;
@@ -1233,7 +1158,7 @@ app.post(['/mcp', '/mcp/:convId'], async (req, res) => {
   // Que des notifications : la spécification demande un 202 sans corps.
   if (!answers.length) return res.status(202).end();
   res.json(Array.isArray(body) ? answers : answers[0]);
-});
+}));
 
 // Le client tente parfois d'ouvrir un flux serveur. On n'en a pas : la spécification prévoit
 // exactement ce refus, et le client s'en contente au lieu de considérer le serveur en panne.
@@ -1536,7 +1461,7 @@ async function advanceTeam(run, stage, outcome) {
   await startTeamStage(team.get(run.id), decision.stage, ticket);
 }
 
-app.post('/api/notes/:id/team', async (req, res) => {
+app.post('/api/notes/:id/team', asyncRoute(async (req, res) => {
   const ticket = notes.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'Ticket inconnu' });
 
@@ -1566,7 +1491,7 @@ app.post('/api/notes/:id/team', async (req, res) => {
   notes.update(ticket.id, { status: 'doing' });
   broadcast({ type: 'notes', project: ticket.project, tickets: notes.list(ticket.project) });
   res.status(201).json({ run: team.get(run.id) });
-});
+}));
 
 app.get('/api/notes/:id/team', (req, res) => {
   const ticket = notes.get(req.params.id);
@@ -1593,78 +1518,11 @@ app.get('/api/notes/:id/prompt', (req, res) => {
 // le `README.md` d'un dépôt.
 
 /** Projet visé par une requête. Même forme que `notesProject`, sur la clé de `plans`. */
-function plansProject(body) {
-  const convId = String((body && body.convId) || '');
-  if (convId) {
-    const conv = store.get(convId);
-    if (!conv) return { error: 'Conversation inconnue' };
-    const project = plans.projectOf(conv);
-    return project ? { project } : { error: "Cette conversation n'a pas de projet" };
-  }
-  const project = plans.key((body && body.project) || '');
-  return project ? { project } : { error: 'Projet manquant' };
-}
-
-// Le tiroir d'un autre onglet doit se rafraîchir quand celui-ci écrit : deux fenêtres sur le
-// même projet est le cas normal ici, pas l'exception.
-function broadcastPlans(project) {
-  broadcast({ type: 'plans', project, sections: plans.list(project) });
-}
-
-app.get('/api/plans', (req, res) => {
-  const found = plansProject(req.query);
-  if (found.error) return res.status(400).json({ error: found.error });
-  res.json({ project: found.project, sections: plans.list(found.project) });
-});
-
-/** Tous les schémas, y compris ceux enfermés dans un plan. Sert l'onglet « Schémas ». */
-app.get('/api/plans/diagrams', (req, res) => {
-  const found = plansProject(req.query);
-  if (found.error) return res.status(400).json({ error: found.error });
-  res.json({ project: found.project, diagrams: plans.diagrams(found.project) });
-});
-
-/** Les amorces de diagramme, pour le sélecteur de création. */
-app.get('/api/plans/templates', (req, res) => {
-  res.json({ diagrams: plans.DIAGRAMS });
-});
-
-app.get('/api/plans/doc', (req, res) => {
-  const found = plansProject(req.query);
-  if (found.error) return res.status(400).json({ error: found.error });
-  try {
-    const doc = plans.read(found.project, req.query.path);
-    if (!doc) return res.status(404).json({ error: 'Document introuvable' });
-    res.json({ project: found.project, doc });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// POST et non PUT, pour la même raison que le bloc-notes : c'est la même route pour
-// l'interface et pour un `curl` d'agent, et un verbe de moins à retenir est un échec de moins.
-app.post('/api/plans/doc', (req, res) => {
-  const found = plansProject(req.body);
-  if (found.error) return res.status(400).json({ error: found.error });
-  try {
-    const doc = plans.write(found.project, (req.body || {}).path, (req.body || {}).content);
-    broadcastPlans(found.project);
-    res.json({ doc });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/plans', (req, res) => {
-  const found = plansProject(req.body);
-  if (found.error) return res.status(400).json({ error: found.error });
-  try {
-    const doc = plans.create(found.project, req.body || {});
-    broadcastPlans(found.project);
-    res.status(201).json({ doc });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+registerPlanRoutes({
+  app,
+  store,
+  plans,
+  broadcast,
 });
 
 // --- Réglages -------------------------------------------------------------
@@ -1678,7 +1536,7 @@ app.post('/api/plans', (req, res) => {
 // Rien n'est calculé ici : tout vient d'adminPanel, qui sait déjà le faire. Voir `lib/panel.js`
 // pour la raison de ne pas fusionner les deux applications.
 
-app.get('/api/panel', async (req, res) => {
+app.get('/api/panel', asyncRoute(async (req, res) => {
   // `webUrl` est rendu même sans jeton : le lien vers le panneau doit marcher avant qu'on ait
   // configuré quoi que ce soit — c'est justement là qu'on a besoin d'y aller.
   const common = { base: panel.BASE, webUrl: panel.WEB_URL };
@@ -1686,288 +1544,37 @@ app.get('/api/panel', async (req, res) => {
     return res.json({ available: false, ...common, tokenFile: panel.TOKEN_FILE });
   }
   res.json({ available: true, ...common, ...(await panel.overview()) });
-});
+}));
 
 // --- Règles d'un projet ----------------------------------------------------
 //
 // Le projet se désigne comme pour le bloc-notes : directement, ou par la conversation d'où
 // l'on parle — c'est cette seconde forme que les agents utilisent, ne connaissant qu'eux-mêmes.
 
-function broadcastRules(project) {
-  broadcast({ type: 'rules', project, rules: rules.list(project) });
-}
-
-/**
- * Lire les règles.
- *
- * Avec `name`, c'est la question que pose un agent — « existe-t-il une règle pour ça ? » — et
- * la réponse tient en un objet ou un `found: false`. Un 404 aurait été plus pur ; il aurait
- * aussi fait échouer le `curl -f` de l'agent, qui aurait lu une panne là où la réponse était
- * « non, rien de spécial, continue ». Sans `name`, c'est l'index.
- */
-app.get('/api/rules', (req, res) => {
-  const found = notesProject(req.query);
-  if (found.error) return res.status(400).json({ error: found.error });
-  const name = String(req.query.name || '').trim();
-  if (name) {
-    const rule = rules.find(found.project, name);
-    return res.json(
-      rule
-        ? { found: true, rule: { name: rule.name, when: rule.when, body: rule.body } }
-        : { found: false, name, message: `Aucune règle « ${name} » sur ce projet.` }
-    );
-  }
-  res.json({ project: found.project, rules: rules.list(found.project) });
+registerProjectKnowledgeRoutes({
+  app,
+  store,
+  notes,
+  rules,
+  memory,
+  prompts,
+  settings,
+  fs,
+  path,
+  broadcast,
 });
-
-app.post('/api/rules', (req, res) => {
-  const found = notesProject(req.body);
-  if (found.error) return res.status(400).json({ error: found.error });
-  try {
-    const rule = rules.create(found.project, req.body || {});
-    broadcastRules(found.project);
-    res.status(201).json({ rule });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+registerSettingsRoutes({
+  app,
+  asyncRoute,
+  settings,
+  checks: createSettingsChecks({
+    notify,
+    mail,
+    browserMcp,
+    host: HOST,
+    port: PORT,
+  }),
 });
-
-app.patch('/api/rules/:id', (req, res) => {
-  try {
-    const rule = rules.update(req.params.id, req.body || {});
-    if (!rule) return res.status(404).json({ error: 'Règle introuvable' });
-    broadcastRules(rule.project);
-    res.json({ rule });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.delete('/api/rules/:id', (req, res) => {
-  const rule = rules.get(req.params.id);
-  if (!rules.remove(req.params.id)) return res.status(404).json({ error: 'Règle introuvable' });
-  broadcastRules(rule.project);
-  res.status(204).end();
-});
-
-// --- Mémoire de projet -----------------------------------------------------
-
-app.get('/api/memory', (req, res) => {
-  const found = notesProject(req.query);
-  if (found.error) return res.status(400).json({ error: found.error });
-  res.json({ project: found.project, entries: memory.list(found.project) });
-});
-
-/**
- * Garder ou écarter une fiche.
- *
- * Garder l'écrit aussi dans `docs/solutions/` **du projet**, et seulement si ce dossier existe
- * déjà : on suit la convention d'un dépôt, on ne lui en impose pas. Le fichier est neuf et non
- * suivi par git, donc il ne salit pas la copie de travail — ce qui compte ici, où un push
- * refusé par `updateInstead` serait le prix d'une fonctionnalité de confort.
- */
-app.post('/api/memory/:id/:decision', (req, res) => {
-  const row = memory.get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Fiche introuvable' });
-  const decision = req.params.decision === 'keep' ? 'kept' : 'dismissed';
-
-  let file = null;
-  if (decision === 'kept' && (settings.read('memory') || {}).writeFile && row.project) {
-    const dir = path.join(row.project, 'docs', 'solutions');
-    try {
-      if (fs.statSync(dir).isDirectory()) {
-        const target = path.join(dir, `${memory.slug(req.body?.title || row.title)}.md`);
-        // Jamais d'écrasement : une fiche homonyme est un fichier existant, écrit par
-        // quelqu'un, et le perdre pour un doublon serait un mauvais échange.
-        fs.writeFileSync(target, memory.markdown({ ...row, ...(req.body || {}) }), { flag: 'wx' });
-        file = target;
-      }
-    } catch {
-      // Dossier absent, fichier déjà là, droits manquants : la fiche est gardée quand même.
-      // Le fichier est un bonus, la mémoire est dans `data/`.
-    }
-  }
-
-  const updated = memory.decide(row.id, decision, { ...(req.body || {}), file });
-  broadcast({ type: 'memory', project: updated.project, entries: memory.list(updated.project) });
-  res.json({ entry: updated });
-});
-
-app.delete('/api/memory/:id', (req, res) => {
-  const row = memory.get(req.params.id);
-  if (!memory.remove(req.params.id)) return res.status(404).json({ error: 'Fiche introuvable' });
-  broadcast({ type: 'memory', project: row.project, entries: memory.list(row.project) });
-  res.status(204).end();
-});
-
-// --- Prompts enregistrés ---------------------------------------------------
-//
-// Des consignes à trous, posées dans le composeur. Aucune conversation, aucun agent : ce que
-// l'API rend, c'est du texte. C'est ce qui les distingue des skills, qui sont une procédure
-// que le CLI déroule lui-même.
-
-function broadcastPrompts() {
-  broadcast({ type: 'prompts', prompts: prompts.list() });
-}
-
-app.get('/api/prompts', (req, res) => {
-  res.json({ prompts: prompts.list() });
-});
-
-app.post('/api/prompts', (req, res) => {
-  try {
-    const row = prompts.create(req.body || {});
-    broadcastPrompts();
-    res.status(201).json({ prompt: row });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.patch('/api/prompts/:id', (req, res) => {
-  try {
-    const row = prompts.update(req.params.id, req.body || {});
-    if (!row) return res.status(404).json({ error: 'Modèle introuvable' });
-    broadcastPrompts();
-    res.json({ prompt: row });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Emploi d'un modèle. Le compteur sert au classement et à rien d'autre : un `204` suffit, et
-// l'échec n'a aucune conséquence — d'où l'absence de 404.
-app.post('/api/prompts/:id/used', (req, res) => {
-  if (prompts.used(req.params.id)) broadcastPrompts();
-  res.status(204).end();
-});
-
-app.delete('/api/prompts/:id', (req, res) => {
-  if (!prompts.remove(req.params.id)) return res.status(404).json({ error: 'Modèle introuvable' });
-  broadcastPrompts();
-  res.status(204).end();
-});
-
-app.get('/api/settings', (req, res) => {
-  res.json({ sections: settings.all() });
-});
-
-app.post('/api/settings/:section', (req, res) => {
-  try {
-    settings.save(req.params.section, req.body || {});
-    res.json({ sections: settings.all() });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.delete('/api/settings/:section', (req, res) => {
-  try {
-    settings.reset(req.params.section);
-    res.json({ sections: settings.all() });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-/**
- * Essayer un réglage pour de vrai, depuis la page.
- *
- * C'est ce qui fait la valeur de la page, plus que les champs : configurer ntfy ou un SMTP
- * à l'aveugle est précisément la raison pour laquelle ça n'avait jamais été fait. On
- * enregistre d'abord, puis on essaie — sinon le test porterait sur autre chose que ce qui
- * est à l'écran.
- */
-app.post('/api/settings/:section/test', async (req, res) => {
-  const section = req.params.section;
-  try {
-    if (req.body && req.body.values) settings.save(section, req.body.values);
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
-
-  try {
-    if (section === 'notify') return res.json(await testNotify());
-    if (section === 'mail') return res.json(await testMail(req.body && req.body.to));
-    if (section === 'browser') return res.json(await testBrowser());
-    res.status(400).json({ error: 'Rien à tester pour cette section' });
-  } catch (err) {
-    res.json({ ok: false, detail: err.message });
-  }
-});
-
-async function testNotify() {
-  const config = notify.loadConfig();
-  if (!config.enabled) return { ok: false, detail: 'Notifications désactivées' };
-
-  const payload = notify.buildMessage({
-    conv: {
-      id: 'test',
-      title: 'Essai depuis la page Paramètres',
-      provider: 'agentHub',
-      cwd: `${HOST}:${PORT}`,
-    },
-    outcome: 'done',
-    appUrl: config.appUrl,
-  });
-  const request = notify.buildRequest(config, payload);
-  const response = await fetch(request.url, {
-    method: 'POST',
-    headers: request.headers,
-    body: request.body,
-    signal: AbortSignal.timeout(8000),
-  });
-  return response.ok
-    ? { ok: true, detail: `Envoyée à ${request.url}` }
-    : { ok: false, detail: `${request.url} a répondu ${response.status} ${response.statusText}` };
-}
-
-async function testMail(to) {
-  const conf = mail.config();
-  if (!conf.enabled) {
-    return { ok: false, detail: 'Il manque au moins l’hôte SMTP ou l’adresse d’expéditeur' };
-  }
-  const target = (to || conf.to || '').trim();
-  if (!target) return { ok: false, detail: 'Aucun destinataire' };
-
-  const sent = await mail.send({
-    to: target,
-    subject: 'agentHub — essai de configuration',
-    text: 'Si tu lis ce message, l’envoi de mail est opérationnel.',
-  });
-  return sent.sent ? { ok: true, detail: `Envoyé à ${target}` } : { ok: false, detail: sent.reason };
-}
-
-/**
- * Le service MCP répond-il ? Une requête `initialize`, la seule qui prouve qu'on parle bien
- * à un serveur MCP et pas à autre chose qui écoute sur ce port.
- */
-async function testBrowser() {
-  const config = browserMcp.config();
-  if (!config.enabled) return { ok: false, detail: 'Navigateur désactivé, ou URL vide' };
-
-  const response = await fetch(config.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-06-18',
-        capabilities: {},
-        clientInfo: { name: 'agenthub-settings', version: '1' },
-      },
-    }),
-    signal: AbortSignal.timeout(8000),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    return { ok: false, detail: `${config.url} a répondu ${response.status} ${response.statusText}` };
-  }
-  const name = /"name"\s*:\s*"([^"]+)"/.exec(text);
-  return { ok: true, detail: `Répond : ${name ? name[1] : 'serveur MCP'}` };
-}
 
 app.get('/api/projects', (req, res) => {
   res.json(projects.listGroups());
@@ -1985,13 +1592,18 @@ app.post('/api/projects', (req, res) => {
 app.get('/api/models', (req, res) => {
   try {
     const models = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8'));
+    // Grok publie sa liste. Le fichier ne sert que de repli si la commande échoue :
+    // un relevé daté a déjà laissé l'interface sur grok-4.5 après la sortie de 4.7.
+    const liveGrok = grokCatalog.current();
+    const source = liveGrok ? { ...models, grok: liveGrok.models } : models;
+    const enriched = modelSelection.enrichModels(source, liveGrok);
     // Générique : ajouter un provider dans models.json suffit, pas besoin de le
     // nommer ici. Les clés `_…` sont de la documentation interne au fichier.
     // `browsable` : qui peut recevoir un navigateur pour une conversation donnée. Vide
     // quand le service MCP n'est pas configuré — l'option disparaît alors de l'UI plutôt
     // que d'échouer au premier clic.
     const out = {
-      efforts: models.efforts || {},
+      efforts: modelSelection.enrichEfforts(models.efforts),
       forkable: [],
       // Qui sait FIGER une session, ce qui n'est pas la meme chose que la deriver : la
       // planification d'un message s'en sert pour dire si le contexte sera gele ou seulement
@@ -2001,8 +1613,11 @@ app.get('/api/models', (req, res) => {
       compactable: [],
       browsable: [],
       browserAlways: [],
+      // Un défaut de tarification n'est pas un défaut d'exécution. Seul Grok expose ici
+      // un modèle résolu, car son CLI fournit un catalogue vérifiable.
+      defaults: modelSelection.defaults(liveGrok),
     };
-    for (const [key, value] of Object.entries(models)) {
+    for (const [key, value] of Object.entries(enriched)) {
       if (!key.startsWith('_') && key !== 'efforts' && Array.isArray(value)) {
         out[key] = value;
         // Qui sait forker une session : le relais s'en sert pour n'offrir la reprise
@@ -2014,12 +1629,11 @@ app.get('/api/models', (req, res) => {
         if (browserMcp.alwaysOn(key)) out.browserAlways.push(key);
       }
     }
-    // Grok publie sa liste. Le fichier ne sert que de repli si la commande échoue :
-    // un relevé daté a déjà laissé l'interface sur grok-4.5 après la sortie de 4.7.
-    const liveGrok = grokCatalog.current();
     if (liveGrok) {
-      out.grok = liveGrok.models;
-      out.efforts = { ...(out.efforts || {}), grok: liveGrok.efforts };
+      out.efforts = {
+        ...(out.efforts || {}),
+        grok: modelSelection.enrichEfforts({ grok: liveGrok.efforts }).grok,
+      };
     }
     res.json(out);
   } catch (err) {
@@ -2066,7 +1680,7 @@ app.get('/api/skills/chat', (req, res) => {
   res.json({ ...atelier.state(), running: Boolean(atelierRun) });
 });
 
-app.post('/api/skills/chat', async (req, res) => {
+app.post('/api/skills/chat', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const provider = body.provider || 'claude';
   if (!PROVIDERS.has(provider)) {
@@ -2134,7 +1748,7 @@ app.post('/api/skills/chat', async (req, res) => {
     // parole quant à ce qu'il a écrit.
     inventory: skills.inventory(cwd),
   });
-});
+}));
 
 /** Interrompt le turn de l'atelier. Ce qui a déjà été écrit sur disque y reste. */
 app.post('/api/skills/chat/stop', (req, res) => {
@@ -2339,7 +1953,7 @@ app.get('/api/gallery/projects/:id/images', (req, res) => {
   res.json({ images: gallery.images(req.params.id) });
 });
 
-app.post('/api/gallery/projects/:id/generate', async (req, res) => {
+app.post('/api/gallery/projects/:id/generate', asyncRoute(async (req, res) => {
   const project = gallery.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Projet introuvable' });
 
@@ -2365,7 +1979,7 @@ app.post('/api/gallery/projects/:id/generate', async (req, res) => {
   const batchId = require('crypto').randomUUID();
   const started = usable.map((p) => generateImage(project, prompt, p, model, batchId));
   res.status(201).json({ batchId, images: started, skipped: providers.filter((p) => !usable.includes(p)) });
-});
+}));
 
 app.delete('/api/gallery/images/:id', (req, res) => {
   if (!gallery.removeImage(req.params.id)) {
@@ -2391,97 +2005,28 @@ app.get('/api/conversations', (req, res) => {
  * le titre et le dossier ; celle-ci va voir dans les fils, ce qui demande de lire le
  * disque et ne peut donc pas partir à chaque frappe — le client attend une pause.
  */
-app.get('/api/search', (req, res) => {
-  res.json(search.search(req.query.q, store.list(), (id) => store.itemsFile(id)));
-});
+app.get('/api/search', asyncRoute(async (req, res) => {
+  const { provider, project, status, archived, from, to, kind } = req.query;
+  const conversations = store.list().filter((conv) => {
+    if (archived === 'only' ? !conv.archived : archived !== 'include' && conv.archived) return false;
+    if (provider && conv.provider !== provider) return false;
+    if (project && workspaceModule.projectKey(conv.project) !== workspaceModule.projectKey(project)) return false;
+    if (status && conv.status !== status) return false;
+    if (from && String(conv.updatedAt).slice(0, 10) < from) return false;
+    if (to && String(conv.createdAt).slice(0, 10) > to) return false;
+    return true;
+  });
+  const result = await searchService.search(req.query.q, conversations, { from, to, kind });
+  res.json({ ...result, conversations, scanned: conversations.length });
+}));
 
 // --- Dossiers de la sidebar ----------------------------------------------
 
-app.post('/api/folders', (req, res) => {
-  const name = ((req.body && req.body.name) || '').trim();
-  if (!name) return res.status(400).json({ error: 'Nom de dossier vide' });
-  const folder = store.createFolder(name);
-  broadcast({ type: 'folders', folders: store.folders() });
-  res.status(201).json({ folder, folders: store.folders() });
-});
-
-// Déclarée AVANT `/api/folders/:id` : sinon `:id` capterait « order » et on tenterait de
-// renommer un dossier qui n'existe pas.
-app.patch('/api/folders/order', (req, res) => {
-  const folders = store.reorderFolders((req.body && req.body.ids) || []);
-  broadcast({ type: 'folders', folders });
-  res.json({ folders });
-});
-
-app.patch('/api/folders/:id', (req, res) => {
-  const name = ((req.body && req.body.name) || '').trim();
-  if (!name) return res.status(400).json({ error: 'Nom de dossier vide' });
-  if (!store.renameFolder(req.params.id, name)) {
-    return res.status(404).json({ error: 'Dossier introuvable' });
-  }
-  broadcast({ type: 'folders', folders: store.folders() });
-  res.json({ folders: store.folders() });
-});
-
-app.delete('/api/folders/:id', (req, res) => {
-  store.removeFolder(req.params.id);
-  // Le dossier disparaît, ses secrets aussi : les garder pour un identifiant qui ne
-  // désigne plus rien reviendrait à laisser des mots de passe sur disque sans rien pour
-  // les rattacher, donc sans rien pour les retrouver et les effacer.
-  secrets.forget(req.params.id);
-  broadcast({ type: 'folders', folders: store.folders() });
-  broadcast({ type: 'conversation', conversation: null }); // force un rafraîchissement
-  res.json({ folders: store.folders() });
-});
-
-// --- Secrets d'un projet --------------------------------------------------
-//
-// Aucune de ces routes ne renvoie jamais une valeur. C'est volontaire et ça ne se contourne
-// pas depuis l'app : une valeur qu'on peut relire depuis un navigateur est une valeur qui
-// traverse le réseau à chaque affichage. On la remplace, on ne la consulte pas.
-
-function knownFolder(req, res) {
-  const folder = store.folders().find((f) => f.id === req.params.id);
-  if (!folder) {
-    res.status(404).json({ error: 'Dossier introuvable' });
-    return null;
-  }
-  return folder;
-}
-
-app.get('/api/folders/:id/secrets', (req, res) => {
-  if (!knownFolder(req, res)) return;
-  res.json({ secrets: secrets.list(req.params.id), minLength: secrets.MIN_LENGTH });
-});
-
-/**
- * Import d'un `.env` collé en entier. Fusionne : coller un fichier partiel ne fait pas
- * disparaître les clés déjà là. Le rapport dit ce qui a été refusé et pourquoi — une clé
- * perdue en silence, c'est un agent qui échouera plus tard sans qu'on sache de quoi.
- */
-app.post('/api/folders/:id/secrets/import', (req, res) => {
-  if (!knownFolder(req, res)) return;
-  const text = (req.body || {}).text;
-  if (typeof text !== 'string' || !text.trim()) {
-    return res.status(400).json({ error: 'Rien à importer' });
-  }
-  const report = secrets.importEnv(req.params.id, text);
-  res.json({ ...report, secrets: secrets.list(req.params.id) });
-});
-
-app.put('/api/folders/:id/secrets/:name', (req, res) => {
-  if (!knownFolder(req, res)) return;
-  const done = secrets.set(req.params.id, req.params.name, (req.body || {}).value);
-  if (done.error) return res.status(400).json({ error: done.error });
-  res.json({ secrets: secrets.list(req.params.id) });
-});
-
-app.delete('/api/folders/:id/secrets/:name', (req, res) => {
-  if (!knownFolder(req, res)) return;
-  if (!secrets.remove(req.params.id, req.params.name)) {
-    return res.status(404).json({ error: 'Clé introuvable' });
-  }
-  res.json({ secrets: secrets.list(req.params.id) });
+registerFolderRoutes({
+  app,
+  store,
+  secrets,
+  broadcast,
 });
 
 // --- Déclencheurs ---------------------------------------------------------
@@ -2510,6 +2055,15 @@ function stopConversation(id, options) {
   const entry = running.get(id);
   if (!entry) return false;
   entry.stopped = true;
+  if (entry.preparing) {
+    setStatus(id, 'stopped');
+    if ((store.get(id) || {}).goal) setGoal(id, null);
+  }
+  const ask = asks.pendingFor(id);
+  if (ask && ask.mode === 'live') {
+    const expired = asks.expire(ask.id);
+    if (expired) broadcast({ type: 'ask-answered', ask: expired });
+  }
   if (entry.child) killTree(entry.child);
   if (options && options.forget) running.delete(id);
   return true;
@@ -2990,7 +2544,8 @@ async function sendPlanned(message) {
   // Copie gelée : tout a été fait à la planification. La conversation visée *est* la copie,
   // avec la session figée déjà posée dessus — il n'y a plus qu'à envoyer.
   if (message.mode === 'frozen') {
-    await dispatch(parent, message.prompt, null);
+    if (running.has(parent.id)) enqueue(parent, message.prompt, null);
+    else await dispatch(parent, message.prompt, null);
     planned.sent(message.id, parent.id);
     broadcast({ type: 'planned' });
     return parent;
@@ -3028,7 +2583,10 @@ async function sendPlanned(message) {
     if (item) broadcast({ type: 'item', convId: parent.id, item });
   }
 
-  await dispatch(target, message.prompt, null);
+  // Le mode `same` et le repli d'un fork visent parfois un fil encore occupé à l'échéance.
+  // Une échéance signifie « remettre le message », pas « échouer si le turn précédent dure ».
+  if (running.has(target.id)) enqueue(target, message.prompt, null);
+  else await dispatch(target, message.prompt, null);
   planned.sent(message.id, target.id);
   broadcast({ type: 'planned' });
   return target;
@@ -3054,25 +2612,25 @@ app.get('/api/triggers', (req, res) => {
 
 // Lancer maintenant, sans toucher à l'échéance : sert à vérifier une consigne avant de
 // la laisser partir seule à 3 h du matin.
-app.post('/api/triggers/:id/run', async (req, res) => {
+app.post('/api/triggers/:id/run', asyncRoute(async (req, res) => {
   const trigger = store.getTrigger(req.params.id);
   if (!trigger) return res.status(404).json({ error: 'Déclencheur introuvable' });
   const conv = await runTrigger(trigger);
   res.status(201).json({ conversation: store.get(conv.id) });
-});
+}));
 
 /**
  * Un événement lance un agent.
  *
  * L'URL porte le jeton, et le jeton est le seul secret : quiconque l'a lance l'agent. C'est
- * acceptable parce que l'application n'écoute que en local / derrière un VPN — le jeton
- * protège surtout d'une URL recopiée dans un service tiers qui la journalise.
+ * le bind local par défaut réduit la surface, et le jeton protège notamment d'une URL recopiée
+ * dans un service tiers qui la journalise.
  *
  * `lib/hooks.js` décide seul s'il faut lancer, et rend un motif en clair : un service dont le
  * webhook est refusé doit pouvoir lire pourquoi dans sa propre journalisation, sinon le
  * silence passe pour une panne.
  */
-app.post('/api/hooks/:token', async (req, res) => {
+app.post('/api/hooks/:token', asyncRoute(async (req, res) => {
   const token = String(req.params.token || '');
   // Le jeton est comparé en entier, jamais préfixé : `find` sur l'égalité stricte, et un
   // déclencheur sans jeton n'est jamais atteignable même si le jeton reçu est vide.
@@ -3089,7 +2647,7 @@ app.post('/api/hooks/:token', async (req, res) => {
     prompt: hooks.prompt(trigger, req.body, { source: req.get('user-agent') }),
   });
   res.status(201).json({ convId: conv.id });
-});
+}));
 
 app.post('/api/triggers', (req, res) => {
   const checked = triggers.validate(req.body, PROVIDERS);
@@ -3180,30 +2738,62 @@ app.delete('/api/triggers/:id', (req, res) => {
   res.json({ deleted: true });
 });
 
-app.get('/api/conversations/:id', (req, res) => {
-  const conv = store.get(req.params.id);
+app.get('/api/conversations/:id', asyncRoute(async (req, res) => {
+  const paginated = Object.prototype.hasOwnProperty.call(req.query, 'limit');
+  const conv = paginated ? store.getMeta(req.params.id) : store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   // Ouvrir une conversation terminée l'acquitte.
-  if (conv.status === 'done') setStatus(conv.id, 'idle');
-  // La file est renvoyée sans les chemins disque des images.
-  // Avant le premier turn enregistré (ou pour une ancienne conversation), montre déjà
-  // le modèle imposé / le défaut connu. Dès qu'un résultat arrive, `lastModels` mesuré
-  // prend définitivement le dessus.
-  const lastModels =
-    Array.isArray(conv.lastModels) && conv.lastModels.length
-      ? conv.lastModels
-      : usage.billedModels(conv.provider, null, conv.model);
+  if (conv.status === 'done') {
+    const acknowledged = store.updateMeta(conv.id, { status: 'idle' });
+    Object.assign(conv, { status: 'idle', updatedAt: acknowledged.updatedAt });
+    broadcast({
+      type: 'status',
+      convId: conv.id,
+      status: 'idle',
+      updatedAt: conv.updatedAt,
+      modelSelection: selectionState(conv),
+    });
+  }
+  // La file est renvoyée sans les chemins disque des images. `lastModels` reste compatible
+  // avec les anciens clients, mais ne reçoit plus le défaut de la table de tarifs.
+  const selected = selectionState(conv);
+  const lastModels = (selected.last && selected.last.models) || [];
+  // Sans `limit`, l'ancienne réponse reste disponible le temps que tous les clients passent
+  // à la pagination. Avec `limit`, seuls les derniers échanges (ou la fenêtre demandée) et
+  // des aperçus de sorties d'outils traversent le réseau.
+  const window = paginated ? await searchService.page(conv.id, req.query) : null;
   res.json({
-    conversation: { ...conv, lastModels, queue: publicQueue(conv) },
+    conversation: {
+      ...conv,
+      items: window ? window.items : conv.items,
+      lastModels,
+      modelSelection: selected,
+      queue: publicQueue(conv),
+    },
     running: running.has(conv.id),
     // La question en attente vit côté serveur : elle doit réapparaître après un
     // rechargement, et se voir depuis un second appareil.
     ask: asks.pendingFor(conv.id),
+    ...(window ? { page: window.page } : {}),
   });
-});
+}));
+
+/** Sortie complète d'un outil, chargée seulement sur une action explicite de l'utilisateur. */
+app.get('/api/conversations/:id/items/:itemId/result', asyncRoute(async (req, res) => {
+  const conv = store.getMeta(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
+  const found = await searchService.result(conv.id, req.params.itemId);
+  if (!found.found) return res.status(404).json({ error: 'Élément introuvable' });
+  res.json({ result: found.result });
+}));
+
+app.get('/api/conversations/:id/landmarks', asyncRoute(async (req, res) => {
+  if (!store.getMeta(req.params.id)) return res.status(404).json({ error: 'Conversation introuvable' });
+  res.json(await searchService.landmarks(req.params.id));
+}));
 
 /** Où en est la branche isolée : ce qui reste à commiter, et ce qu'une fusion apporterait. */
-app.get('/api/conversations/:id/worktree', async (req, res) => {
+app.get('/api/conversations/:id/worktree', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   if (!conv.worktree) return res.json({ worktree: null });
@@ -3212,7 +2802,7 @@ app.get('/api/conversations/:id/worktree', async (req, res) => {
   } catch (err) {
     res.status(409).json({ error: err.message });
   }
-});
+}));
 
 /**
  * Rapporte la branche isolée dans le dépôt principal.
@@ -3222,7 +2812,7 @@ app.get('/api/conversations/:id/worktree', async (req, res) => {
  * commencé. Les autres refus — travail non commité, dépôt principal sale, conflit — sont
  * dans `lib/worktrees.js`, avec la raison de chacun.
  */
-app.post('/api/conversations/:id/worktree/merge', async (req, res) => {
+app.post('/api/conversations/:id/worktree/merge', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   if (!conv.worktree) return res.status(400).json({ error: "Cette conversation n'est pas isolée" });
@@ -3240,9 +2830,9 @@ app.post('/api/conversations/:id/worktree/merge', async (req, res) => {
   } catch (err) {
     res.status(409).json({ error: err.message });
   }
-});
+}));
 
-app.post('/api/conversations', async (req, res) => {
+app.post('/api/conversations', asyncRoute(async (req, res) => {
   const {
     provider,
     cwd,
@@ -3259,6 +2849,14 @@ app.post('/api/conversations', async (req, res) => {
   if (!PROVIDERS.has(provider)) {
     return res.status(400).json({ error: 'Provider inconnu' });
   }
+  const checkedSelection = modelSelection.patch(
+    { provider, model: null, effort: null },
+    {
+      ...(typeof model === 'string' ? { model } : {}),
+      ...(typeof effort === 'string' ? { effort } : {}),
+    }
+  );
+  if (checkedSelection.error) return res.status(400).json({ error: checkedSelection.error });
   if (parentId && !store.get(parentId)) {
     return res.status(400).json({ error: 'Conversation parente introuvable' });
   }
@@ -3296,8 +2894,8 @@ app.post('/api/conversations', async (req, res) => {
     // Provisoire quand il n'y a pas de projet : le vrai chemin dépend de l'identifiant,
     // qui n'existe qu'une fois la conversation créée.
     cwd: cwd || '',
-    model,
-    effort,
+    model: checkedSelection.patch.model || null,
+    effort: checkedSelection.patch.effort || null,
     folder,
     parentId: parentId || null,
     // Refusé pour un fournisseur qui ne sait pas recevoir de config MCP à l'appel : mieux
@@ -3360,7 +2958,7 @@ app.post('/api/conversations', async (req, res) => {
     await dispatch(conv, first, saved);
   }
   res.status(201).json({ conversation: store.get(conv.id) });
-});
+}));
 
 /**
  * Ouvre un objectif : la conversation ne s'arrêtera plus au premier turn qui finit.
@@ -3368,7 +2966,7 @@ app.post('/api/conversations', async (req, res) => {
  * Refusé pendant qu'un turn tourne : le premier tour part tout de suite, et le mettre en file
  * ferait démarrer la boucle sur un contexte qu'on ne connaît pas encore.
  */
-app.post('/api/conversations/:id/goal', async (req, res) => {
+app.post('/api/conversations/:id/goal', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   const objective = ((req.body && req.body.objective) || '').trim();
@@ -3392,7 +2990,7 @@ app.post('/api/conversations/:id/goal', async (req, res) => {
     goalText: goal.text,
   });
   res.status(201).json({ goal });
-});
+}));
 
 /** Abandonne l'objectif. Le turn en cours, lui, continue : c'est la boucle qu'on arrête. */
 app.delete('/api/conversations/:id/goal', (req, res) => {
@@ -3408,7 +3006,7 @@ app.delete('/api/conversations/:id/goal', (req, res) => {
   res.json({ abandoned: true });
 });
 
-app.post('/api/conversations/:id/messages', async (req, res) => {
+app.post('/api/conversations/:id/messages', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   const prompt = (req.body && req.body.prompt) || '';
@@ -3428,7 +3026,7 @@ app.post('/api/conversations/:id/messages', async (req, res) => {
 
   await dispatch(conv, prompt, saved);
   res.json({ queued: false });
-});
+}));
 
 // --- Gestion de la file ---------------------------------------------------
 
@@ -3483,8 +3081,8 @@ app.delete('/api/conversations/:id/queue/:qid', (req, res) =>
 
 // « Envoyer comme instruction » : part tout de suite si l'agent est libre, sinon
 // remonte en tête de file.
-app.post('/api/conversations/:id/queue/:qid/promote', (req, res) =>
-  withQueued(req, res, (conv, entry) => {
+app.post('/api/conversations/:id/queue/:qid/promote', asyncRoute(async (req, res) =>
+  withQueued(req, res, async (conv, entry) => {
     if (running.has(conv.id)) {
       const queue = [entry, ...(conv.queue || []).filter((q) => q.id !== entry.id)];
       store.update(conv.id, { queue });
@@ -3492,22 +3090,22 @@ app.post('/api/conversations/:id/queue/:qid/promote', (req, res) =>
       broadcastQueue(conv);
       return res.json({ promoted: true, sent: false });
     }
-    dequeue(conv, entry.id);
-    dispatch(conv, entry.text, entry.images);
+    const started = await dispatchQueued(conv, entry);
+    if (!started) {
+      return res.status(409).json({
+        error: 'Envoi interrompu avant le lancement ; le message reste en file.',
+      });
+    }
     return res.json({ promoted: true, sent: true });
   })
-);
+));
 
 app.post('/api/conversations/:id/queue/order', (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   const ids = (req.body && req.body.ids) || [];
   const current = conv.queue || [];
-  const byId = new Map(current.map((q) => [q.id, q]));
-  const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
-  if (ordered.length !== current.length) {
-    return res.status(400).json({ error: 'Liste d\'identifiants incomplète' });
-  }
+  const ordered = orderQueue(current, ids);
   store.update(conv.id, { queue: ordered });
   conv.queue = ordered;
   broadcastQueue(conv);
@@ -3577,7 +3175,7 @@ app.get('/api/conversations/:id/image', (req, res) => {
 });
 
 // Fichiers modifiés depuis un instantané, pour montrer l'impact avant de restaurer.
-app.get('/api/conversations/:id/checkpoints/:sha/diff', async (req, res) => {
+app.get('/api/conversations/:id/checkpoints/:sha/diff', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   try {
@@ -3585,9 +3183,9 @@ app.get('/api/conversations/:id/checkpoints/:sha/diff', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
-});
+}));
 
-app.post('/api/conversations/:id/checkpoints/:sha/restore', async (req, res) => {
+app.post('/api/conversations/:id/checkpoints/:sha/restore', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   if (running.has(conv.id)) {
@@ -3608,7 +3206,7 @@ app.post('/api/conversations/:id/checkpoints/:sha/restore', async (req, res) => 
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
-});
+}));
 
 // --- Dépôt du dossier de travail ------------------------------------------
 
@@ -3620,7 +3218,7 @@ app.post('/api/conversations/:id/checkpoints/:sha/restore', async (req, res) => 
  * conversation. « Pas un dépôt » n'est pas une erreur : on répond 200 avec
  * `repo: false`, le front n'a alors qu'à cacher le bouton.
  */
-app.get('/api/conversations/:id/git', async (req, res) => {
+app.get('/api/conversations/:id/git', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
 
@@ -3640,7 +3238,7 @@ app.get('/api/conversations/:id/git', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
-});
+}));
 
 // --- Relais ---------------------------------------------------------------
 //
@@ -3679,17 +3277,28 @@ function resolveRelayFile(conv, wanted) {
  */
 async function writeHandoffNote(parent) {
   const before = (store.get(parent.id).items || []).length;
-
-  const checkpoint = await checkpoints.snapshot(parent, 'avant note de passation');
-  const request = store.addItem(parent.id, {
-    kind: 'user',
-    text: handoff.REQUEST,
-    handoff: 'request',
-    checkpoint,
+  const prepared = await prepareTurn({
+    id: parent.id,
+    running,
+    exists: () => Boolean(store.get(parent.id)),
+    prepare: async () => {
+      setStatus(parent.id, 'working');
+      return checkpoints.snapshot(parent, 'avant note de passation');
+    },
+    onCancel: () => setStatus(parent.id, 'stopped'),
+    onError: () => setStatus(parent.id, 'error'),
+    start: (checkpoint, reservation) => {
+      const request = store.addItem(parent.id, {
+        kind: 'user', text: handoff.REQUEST, handoff: 'request', checkpoint,
+      });
+      broadcast({ type: 'item', convId: parent.id, item: request });
+      return {
+        done: startTurn(parent, handoff.REQUEST, [], { isHandoff: true }, reservation),
+      };
+    },
   });
-  broadcast({ type: 'item', convId: parent.id, item: request });
-
-  const outcome = await startTurn(parent, handoff.REQUEST, []);
+  if (!prepared) throw new Error('La note de passation a été interrompue avant son lancement.');
+  const outcome = await prepared.done;
   if (outcome.stopped) throw new Error('La note de passation a été interrompue.');
   if (outcome.failed) {
     throw new Error("L'agent n'a pas pu écrire sa note de passation ; l'erreur est dans son fil.");
@@ -3710,7 +3319,7 @@ async function writeHandoffNote(parent) {
 }
 
 // Fichiers markdown que la conversation a créés ou modifiés, candidats au relais.
-app.get('/api/conversations/:id/relay/files', async (req, res) => {
+app.get('/api/conversations/:id/relay/files', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   try {
@@ -3727,9 +3336,9 @@ app.get('/api/conversations/:id/relay/files', async (req, res) => {
     // Une liste indisponible ne doit pas bloquer un relais : la saisie libre reste là.
     res.json({ files: [], warning: err.message });
   }
-});
+}));
 
-app.post('/api/conversations/:id/relay', async (req, res) => {
+app.post('/api/conversations/:id/relay', asyncRoute(async (req, res) => {
   const parent = store.get(req.params.id);
   if (!parent) return res.status(404).json({ error: 'Conversation introuvable' });
 
@@ -3741,6 +3350,14 @@ app.post('/api/conversations/:id/relay', async (req, res) => {
   if (from !== 'file' && from !== 'conversation') {
     return res.status(400).json({ error: 'Point de départ inconnu' });
   }
+  const checkedSelection = modelSelection.patch(
+    { provider, model: null, effort: null },
+    {
+      ...(typeof model === 'string' ? { model } : {}),
+      ...(typeof effort === 'string' ? { effort } : {}),
+    }
+  );
+  if (checkedSelection.error) return res.status(400).json({ error: checkedSelection.error });
 
   let text = prompt;
   let forkFrom = null;
@@ -3783,8 +3400,8 @@ app.post('/api/conversations/:id/relay', async (req, res) => {
   const child = store.create({
     provider,
     cwd: parent.cwd,
-    model: model || null,
-    effort: effort || null,
+    model: checkedSelection.patch.model || null,
+    effort: checkedSelection.patch.effort || null,
     parentId: parent.id,
     forkFrom,
     title: titles.fromText(prompt),
@@ -3798,7 +3415,7 @@ app.post('/api/conversations/:id/relay', async (req, res) => {
     handoff: noteFile ? path.basename(noteFile) : null,
     forked: Boolean(forkFrom),
   });
-});
+}));
 
 /**
  * Force un `/compact` dans la session CLI courante.
@@ -3807,7 +3424,7 @@ app.post('/api/conversations/:id/relay', async (req, res) => {
  * Claude et Grok comprennent la slash ; Codex n'a pas d'équivalent — on refuse plutôt
  * que d'envoyer un prompt qui serait lu comme du texte.
  */
-app.post('/api/conversations/:id/compact', async (req, res) => {
+app.post('/api/conversations/:id/compact', asyncRoute(async (req, res) => {
   const conv = store.get(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   if (!contextActions.supportsCompact(conv.provider)) {
@@ -3830,7 +3447,7 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
 
   await dispatch(conv, prompt, null, { contextAction: 'compact' });
   res.json({ queued: false });
-});
+}));
 
 /**
  * Nouvelle conversation « légère » : note de passation, jamais de fork de session.
@@ -3840,7 +3457,7 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
  * on écrit une note synthétique à partir du fil pour que ça marche aussi sur une
  * session morte (cas typique après un « Échec du turn »).
  */
-app.post('/api/conversations/:id/resume-light', async (req, res) => {
+app.post('/api/conversations/:id/resume-light', asyncRoute(async (req, res) => {
   const parent = store.get(req.params.id);
   if (!parent) return res.status(404).json({ error: 'Conversation introuvable' });
   if (!(parent.items || []).some((it) => it.kind === 'user')) {
@@ -3914,7 +3531,7 @@ app.post('/api/conversations/:id/resume-light', async (req, res) => {
     synthetic,
     forked: false,
   });
-});
+}));
 
 app.post('/api/conversations/:id/stop', (req, res) => {
   // La file n'est pas vidée : interrompre l'agent ne doit pas jeter les messages que tu
@@ -3926,16 +3543,23 @@ app.post('/api/conversations/:id/stop', (req, res) => {
 });
 
 app.patch('/api/conversations/:id', (req, res) => {
-  const conv = store.get(req.params.id);
+  const conv = store.getMeta(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation introuvable' });
   const patch = {};
+  if (typeof req.body.archived === 'boolean') {
+    if (req.body.archived && running.has(conv.id)) {
+      return res.status(409).json({ error: 'Attends la fin du travail avant d’archiver ce fil.' });
+    }
+    patch.archived = req.body.archived;
+  }
   if (typeof req.body.title === 'string' && req.body.title.trim()) {
     patch.title = req.body.title.trim().slice(0, 120);
     // Un titre écrit à la main est définitif : le modèle ne le reprendra pas.
     patch.titleAuto = false;
   }
-  if (typeof req.body.model === 'string') patch.model = req.body.model || null;
-  if (typeof req.body.effort === 'string') patch.effort = req.body.effort || null;
+  const checkedSelection = modelSelection.patch(conv, req.body || {});
+  if (checkedSelection.error) return res.status(400).json({ error: checkedSelection.error });
+  Object.assign(patch, checkedSelection.patch);
   if (typeof req.body.pinned === 'boolean') patch.pinned = req.body.pinned;
   // Le navigateur se branche au turn suivant, comme l'effort : rien à reconstruire.
   if (typeof req.body.browser === 'boolean') patch.browser = req.body.browser;
@@ -3946,9 +3570,33 @@ app.patch('/api/conversations/:id', (req, res) => {
     }
     patch.folder = target;
   }
-  const updated = store.update(conv.id, patch);
-  broadcast({ type: 'conversation', conversation: store.list().find((c) => c.id === conv.id) });
-  res.json({ conversation: updated });
+  const updated = store.updateMeta(conv.id, patch);
+  const selected = selectionState(updated);
+  const listed = store.list().find((c) => c.id === conv.id);
+  broadcast({
+    type: 'conversation',
+    conversation: {
+      ...listed,
+      model: updated.model,
+      effort: updated.effort,
+      modelSelection: selected,
+    },
+  });
+  // Une modification de titre/modèle/rangement n'a pas besoin de retransmettre les dizaines
+  // de Mo du fil complet. L'interface recharge ses métadonnées via la sidebar.
+  const { items, ...metadata } = updated;
+  res.json({
+    conversation: {
+      ...metadata,
+      modelSelection: selected,
+      applies:
+        running.has(conv.id) &&
+        (typeof req.body.model === 'string' || typeof req.body.effort === 'string')
+          ? 'next-turn'
+          : 'now',
+      queue: publicQueue(updated),
+    },
+  });
 });
 
 /** Efface les traces disque d'une conversation : images, instantanés, notes. */
@@ -3967,21 +3615,32 @@ function scratchDir(convId) {
 }
 
 /**
- * Retire le worktree d'une conversation supprimée. Asynchrone et jamais bloquant : la
- * conversation est déjà partie quand ça tourne, et un dépôt devenu injoignable ne doit pas
- * faire échouer sa suppression. La branche, elle, survit dès qu'elle porte du travail —
- * c'est `lib/worktrees.js` qui en décide, et le journal dit ce qui a été gardé.
+ * Retire un worktree propre, en conservant les dossiers sales, partagés ou dont l'état
+ * est inconnu. La suppression attend ce relevé et indique au navigateur ce qui a été gardé.
  */
-function dropWorktree(conv) {
-  if (!conv || !conv.worktree) return;
-  worktrees
-    .remove(conv.worktree)
-    .then((done) => {
-      if (done.branchKept) {
-        console.log(`worktree retiré, branche ${done.branch} conservée (travail non fusionné)`);
-      }
-    })
-    .catch((err) => console.error(`worktree non retiré (${conv.id}) : ${err.message}`));
+async function dropWorktree(conv) {
+  if (!conv || !conv.worktree) return null;
+  const wt = conv.worktree;
+  const root = path.resolve(wt.path);
+  const shared = store.list().some((entry) => {
+    if (entry.id === conv.id || !entry.cwd) return false;
+    const cwd = path.resolve(entry.cwd);
+    return cwd === root || cwd.startsWith(`${root}${path.sep}`);
+  });
+  let done;
+  if (shared) {
+    done = { removed: false, branchKept: true, branch: wt.branch, path: wt.path, reason: 'shared' };
+  } else {
+    try {
+      done = await worktrees.remove(wt);
+    } catch (err) {
+      console.error(`worktree non retiré (${conv.id}) : ${err.message}`);
+      done = { removed: false, branchKept: true, branch: wt.branch, path: wt.path, reason: 'unknown-state' };
+    }
+  }
+  if (!done.removed) console.log(`worktree conservé : ${wt.path} (${done.reason})`);
+  else if (done.branchKept) console.log(`worktree retiré, branche ${done.branch} conservée`);
+  return done;
 }
 
 /**
@@ -3990,26 +3649,27 @@ function dropWorktree(conv) {
  * perdre le contexte dont il est issu.
  * @returns {boolean} true si la suppression a eu lieu
  */
-function purgeRun(id) {
+async function purgeRun(id) {
   if (running.has(id)) return false; // une exécution en cours ne se purge pas
   const conv = store.get(id); // relu avant la purge : après, son worktree est introuvable
   if (!store.purge(id)) return false;
-  dropWorktree(conv);
+  await dropWorktree(conv);
   removeTraces(id);
   broadcast({ type: 'deleted', convId: id });
   return true;
 }
 
-app.delete('/api/conversations/:id', (req, res) => {
+app.delete('/api/conversations/:id', asyncRoute(async (req, res) => {
   stopConversation(req.params.id, { forget: true });
   const conv = store.get(req.params.id); // relu avant le retrait : après, il n'y a plus rien
   const detached = store.remove(req.params.id);
+  searchService.forget(req.params.id);
   authRequests.forget(req.params.id);
   asks.forget(req.params.id);
   // Les fiches jamais tranchées partent avec la conversation : leur bouton vivait dans le
   // fil. Celles qui ont été gardées restent — elles appartiennent au projet, pas au fil.
   memory.forget(req.params.id);
-  dropWorktree(conv);
+  const worktree = await dropWorktree(conv);
   removeTraces(req.params.id);
   broadcast({ type: 'deleted', convId: req.params.id });
   // Les enfants survivent au parent : il faut les renvoyer pour que la sidebar les
@@ -4018,7 +3678,38 @@ app.delete('/api/conversations/:id', (req, res) => {
     const entry = store.list().find((c) => c.id === childId);
     if (entry) broadcast({ type: 'conversation', conversation: entry });
   }
-  res.json({ deleted: true, detached });
+  res.json({ deleted: true, detached, worktree });
+}));
+
+const resolveUsageMeta = (id) => {
+  const meta = store.getMeta(id);
+  return meta ? { ...meta, project: notes.projectOf(meta) } : null;
+};
+const workspaceService = workspaceModule.create({
+  listConversations: () => store.list().map((conv) =>
+    conv.cwd && conv.cwd.startsWith(`${path.join(store.DATA_DIR, 'scratch')}${path.sep}`)
+      ? { ...conv, cwd: null, project: null } : conv),
+  listFolders: () => store.folders(),
+  listAsks: () => asks.list('pending'),
+  listSilent: () => silentTurns,
+  notesFor: (project) => notes.list(project),
+  plansFor: (project) => plans.list(project),
+  usageBreakdown: () => usage.breakdown({ resolve: resolveUsageMeta }),
+  inventoryWorktrees: () => worktrees.inventory({
+    conversations: store.list(), repos: store.folders().map((folder) => folder.cwd).filter(Boolean),
+  }),
+});
+app.use('/api/workspace', workspaceRoutes({
+  express, asyncRoute, store, workspace: workspaceService, budgets, worktrees,
+  usage, notes, running, broadcast, providers: PROVIDERS,
+}));
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const code = Number(err.statusCode || err.status);
+  const status = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
+  if (status >= 500) console.error(`requête ${req.method} ${req.path} : ${err.message}`);
+  res.status(status).json({ error: err.message || 'Erreur interne du serveur' });
 });
 
 let nextClientId = 1;
@@ -4027,6 +3718,7 @@ wss.on('connection', (ws) => {
   // Un identifiant par socket, et non par appareil : le second volet est un iframe de la
   // même page, donc une seconde connexion, avec sa propre conversation ouverte.
   const clientId = `c${nextClientId++}`;
+  ws.agentHubConvId = null;
   presence.join(clientId);
 
   ws.send(
@@ -4051,6 +3743,7 @@ wss.on('connection', (ws) => {
       return; // un client qui bafouille ne doit pas faire tomber le serveur
     }
     if (msg && msg.type === 'presence') {
+      ws.agentHubConvId = msg.convId ? String(msg.convId) : null;
       presence.update(clientId, { convId: msg.convId, visible: msg.visible });
     }
   });
@@ -4062,6 +3755,7 @@ wss.on('connection', (ws) => {
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {
     scheduler.stop();
+    await searchService.close();
     store.flush();
     // Chromium verrouille son profil. Le laisser survivre au redemarrage PM2 rendrait la
     // prochaine ouverture impossible, contrairement aux turns dont la survie est voulue.
@@ -4096,6 +3790,9 @@ listenWithRetry(server, {
     );
 
     reconcileOnBoot();
+    // Index dérivé, construit hors du thread HTTP ; le serveur reste utilisable pendant
+    // le premier passage, et les ouvertures suivantes lisent directement leur fenêtre.
+    searchService.warm(store.list());
 
     // Le balayage des turns muets. Il tourne toujours, y compris quand rien ne tourne : un
     // tick sur une liste vide est une lecture de fichier de quelques centaines d'octets.
