@@ -22,9 +22,9 @@ process.env.AGENTHUB_DATA = scratch;
 const atelier = require('../lib/atelier');
 
 const INVENTORY = {
-  cwd: '/tmp/projet',
+  cwd: '/var/www/projet',
   globalRoot: '/home/moi/.claude/skills',
-  projectRoot: '/tmp/projet/.claude/skills',
+  projectRoot: '/var/www/projet/.claude/skills',
   skills: [
     { name: 'deployer', scope: 'global', description: 'Déploie le site', editable: true },
     { name: 'ce-commit', scope: 'plugin', description: 'Commit', editable: false },
@@ -34,7 +34,7 @@ const INVENTORY = {
 test('la consigne dit où écrire, dans les deux portées', () => {
   const prompt = atelier.buildPrompt({ message: 'crée une skill', inventory: INVENTORY });
   assert.ok(prompt.includes('/home/moi/.claude/skills/<nom>/SKILL.md'), prompt);
-  assert.ok(prompt.includes('/tmp/projet/.claude/skills/<nom>/SKILL.md'), prompt);
+  assert.ok(prompt.includes('/var/www/projet/.claude/skills/<nom>/SKILL.md'), prompt);
 });
 
 test('sans projet choisi, la consigne le dit au lieu d’inventer un chemin', () => {

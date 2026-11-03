@@ -102,6 +102,76 @@ test('sans reponse a temps, l outil rend la main au lieu de bloquer', async () =
   assert.match(res.result.content[0].text, /termine le turn|poursuis/);
 });
 
+test('annuler la requete MCP ferme la question live sans attendre le plafond', async () => {
+  const { mcp, asks } = fresh();
+  let created;
+  let settled;
+  const call = mcp.dispatch(
+    rpc('tools/call', { name: 'ask_user', arguments: { question: 'Alors ?' } }),
+    'c1',
+    {
+      onCreate: (row) => (created = row),
+      onSettle: (row) => (settled = row),
+      waitMs: 5000,
+    }
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(asks.hasWaiter(created.id), true);
+  const cancelled = await mcp.dispatch(
+    { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } },
+    'c1',
+    {}
+  );
+
+  assert.equal(cancelled, null, 'une notification ne reçoit pas de réponse');
+  const res = await call;
+  assert.equal(res.result.isError, true);
+  assert.equal(asks.get(created.id).status, 'expired');
+  assert.equal(settled.status, 'expired');
+});
+
+test('une annulation tardive ne ferme pas la question qui a remplace la sienne', async () => {
+  const { mcp, asks } = fresh();
+  const created = [];
+  const deps = { onCreate: (row) => created.push(row), waitMs: 5000 };
+  const callA = mcp.dispatch(
+    rpc('tools/call', { name: 'ask_user', arguments: { question: 'Question A' } }, 101),
+    'c1',
+    deps
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const callB = mcp.dispatch(
+    rpc('tools/call', { name: 'ask_user', arguments: { question: 'Question B' } }, 102),
+    'c1',
+    deps
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(created.length, 2);
+  assert.equal(asks.get(created[1].id).status, 'pending');
+
+  await mcp.dispatch(
+    { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 101 } },
+    'c1',
+    {}
+  );
+  assert.equal(
+    asks.get(created[1].id).status,
+    'pending',
+    "l'annulation de A ne doit jamais viser B"
+  );
+
+  await mcp.dispatch(
+    { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 102 } },
+    'c1',
+    {}
+  );
+  assert.equal(asks.get(created[1].id).status, 'expired');
+  assert.equal((await callA).result.isError, true);
+  assert.equal((await callB).result.isError, true);
+});
+
 test('la conversation vient de l URL, ou de l argument en repli', async () => {
   const { mcp, asks } = fresh();
   const rows = [];

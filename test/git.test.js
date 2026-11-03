@@ -39,19 +39,19 @@ test('une ligne de log se découpe en tous ses champs', () => {
       '378b612f8',
       '2c442884d1 ff01234567',
       'HEAD -> dev',
-      'dev',
+      'developer',
       '1754200000',
       'fix: le port',
-      'dev@example.com'
+      'developer@example.test'
     )
   );
 
   assert.equal(k.sha, '378b612f8aa9');
   assert.equal(k.short, '378b612f8');
   assert.deepEqual(k.parents, ['2c442884d1', 'ff01234567']);
-  assert.equal(k.author, 'dev');
-  assert.equal(k.email, 'dev@example.com');
-  assert.equal(k.avatar, avatarHash('dev@example.com'));
+  assert.equal(k.author, 'developer');
+  assert.equal(k.email, 'developer@example.test');
+  assert.equal(k.avatar, avatarHash('developer@example.test'));
   assert.equal(k.at, 1754200000 * 1000);
   assert.equal(k.subject, 'fix: le port');
 });
@@ -59,8 +59,8 @@ test('une ligne de log se découpe en tous ses champs', () => {
 test('l’empreinte de l’avatar ignore la casse et les espaces de l’adresse', () => {
   // Gravatar hache l'adresse en minuscules et sans espaces : la même personne doit obtenir la
   // même image quelle que soit la façon dont son `user.email` est écrit d'une machine à l'autre.
-  assert.equal(avatarHash('  Dev@Example.COM '), avatarHash('dev@example.com'));
-  assert.match(avatarHash('dev@example.com'), /^[0-9a-f]{64}$/);
+  assert.equal(avatarHash('  Developer@Example.Test '), avatarHash('developer@example.test'));
+  assert.match(avatarHash('developer@example.test'), /^[0-9a-f]{64}$/);
 });
 
 test('un commit sans adresse n’a pas d’empreinte d’avatar plutôt qu’une empreinte du vide', () => {

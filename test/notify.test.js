@@ -48,7 +48,7 @@ const CONV = {
   title: 'Veille des logs',
   provider: 'claude',
   model: 'opus',
-  cwd: '.',
+  cwd: '/srv/projects/demo-app',
   lastCostUsd: 0.0421,
 };
 
@@ -63,7 +63,7 @@ test('le message dit ce qui a échoué, où, et comment y aller', () => {
 
   assert.equal(msg.title, 'Veille · Agent en échec');
   assert.match(msg.message, /Veille des logs/);
-  assert.match(msg.message, /claude · opus — \./);
+  assert.match(msg.message, /claude · opus — \/srv\/projects\/demo-app/);
   assert.match(msg.message, /ENOENT/);
   assert.match(msg.message, /http:\/\/127\.0\.0\.1:3901\/#abc-123/);
   assert.equal(msg.priority, 4);
@@ -134,8 +134,8 @@ test('un webhook sans URL est refusé avant tout appel réseau', () => {
 // --- Répondre depuis la notification --------------------------------------
 //
 // Répondre demandait d'ouvrir l'application, de retrouver la conversation et de cliquer. Les
-// boutons de ntfy font la requête HTTP depuis le téléphone lui-même — ce qui marche si
-// le téléphone peut joindre l'app (même réseau / VPN).
+// boutons de ntfy font la requête HTTP depuis le téléphone lui-même — il doit donc pouvoir
+// joindre l'application sur le même réseau ou via un VPN.
 
 const ASK = {
   id: 'ask-1',

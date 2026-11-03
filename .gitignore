@@ -13,12 +13,26 @@ node_modules/
 # reste irréversible.
 data/
 
+# Service compagnon local, notamment le profil Chromium et ses sessions.
+/playwright-mcp/
+
 # Réglages SMTP : ils contiennent un mot de passe. `config/mail.example.json` est suivi et
 # documente les champs ; la vraie configuration reste sur la machine. C'est le seul fichier
 # de `config/` hors du dépôt — les autres n'ont aucun secret.
 config/mail.json
 
-# Archives de transfert vers le dépôt du PC.
+# Archives de transfert et copies Git locales.
 *.tar.gz
+*.tgz
+*.bundle
+
+# Identifiants et configuration locale.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
 *.log

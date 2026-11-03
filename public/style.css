@@ -1,4 +1,4 @@
-/* agentHub — feuille de style unique, sans dépendance.
+/* agentHub — styles des vues et composants, sans dépendance.
    Deux principes : les contrôles natifs héritent du thème sombre via
    color-scheme (sinon les popups de <select> s'affichent en noir sur gris), et
    toute animation est désactivée sous prefers-reduced-motion. */
@@ -52,6 +52,9 @@ html, body {
 }
 
 body { display: flex; overflow: hidden; }
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
 
 button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
 input, textarea, select { font: inherit; color: inherit; }
@@ -1510,6 +1513,45 @@ select {
 #messages { flex: 1; overflow-y: auto; padding: 24px 18px 10px; min-height: 0; overscroll-behavior: contain; }
 #messages > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 
+.history-control { display: flex; justify-content: center; min-height: 8px; }
+.history-control button,
+.tool-result-more,
+.conversation-error button {
+  min-height: 36px;
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--bg-raise);
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.history-control button:hover,
+.tool-result-more:hover,
+.conversation-error button:hover { color: var(--text); border-color: var(--accent); }
+.history-before { margin-bottom: 14px; }
+.history-after { margin-top: 4px; padding-bottom: 8px; }
+.history-after button { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
+.conversation-loading,
+.conversation-error {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  color: var(--muted);
+  text-align: center;
+}
+.conversation-error { flex-direction: column; }
+.conversation-error strong { color: var(--text); font-size: 15px; }
+.conversation-error span { max-width: 520px; overflow-wrap: anywhere; }
+#conv-view.conv-loading #composer,
+#conv-view.conv-loading .head-tools,
+#conv-view.conv-loading #btn-head-more,
+#conv-view.conv-loading #btn-head-expand { opacity: .45; pointer-events: none; }
+
 /* Appliquée uniquement aux éléments ajoutés en direct. */
 .is-new { animation: itemIn .26s var(--ease); }
 @keyframes itemIn {
@@ -1688,6 +1730,9 @@ details.tool.err { border-color: var(--red-dim); background: #2f2724; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.tool-result-more { margin-top: 9px; }
+.tool-result-more:disabled,
+.history-control button:disabled { cursor: wait; opacity: .65; }
 details.think { color: var(--muted); }
 details.think .tool-body { padding: 7px 0 0 15px; white-space: pre-wrap; font-size: 13px; }
 
@@ -3345,6 +3390,7 @@ body.nav-open #backdrop { opacity: 1; pointer-events: auto; }
   #btn-compose-more.on, #btn-compose-more.live { color: var(--accent); }
 
   #messages { padding: 16px 12px 8px; }
+  .history-control button, .tool-result-more, .conversation-error button { min-height: 44px; }
   #usage-body { padding: 18px 12px 36px; }
   #composer { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }
   .new-wrap { padding: 22px 16px 40px; }

@@ -3,10 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1f1e1d">
+<meta name="theme-color" content="#141719">
 <meta name="color-scheme" content="dark">
 <title>agentHub</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/workspace.css">
+<link rel="stylesheet" href="/model-picker.css">
+<link rel="stylesheet" href="/design.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
 </head>
 <body>
@@ -31,6 +34,10 @@
 </div>
 
 <aside id="sidebar">
+  <a class="side-brand" href="#view=inbox" aria-label="agentHub — Espace de travail">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M9 10.5 22 9M9 10.5 16 23M22 9l-6 14" stroke="currentColor" stroke-width="1.4"/><circle cx="9" cy="10.5" r="3.2" fill="currentColor"/><circle cx="22" cy="9" r="3.2" fill="currentColor"/><circle cx="16" cy="23" r="3.2" fill="currentColor"/></svg></span>
+    <span><strong>agent<span>Hub</span></strong><small>Votre atelier multiagents</small></span>
+  </a>
   <div class="side-top">
     <button id="btn-new" class="side-action">
       <svg class="icon"><use href="#i-plus"/></svg> Nouveau
@@ -49,6 +56,9 @@
        conversations, sans qu'aucune vue ne coûte un clic de plus. Les libellés sont dans des
        `span` pour qu'on puisse les masquer — un nœud de texte nu ne se cible pas en CSS. -->
   <nav class="side-nav">
+    <button id="btn-workspace" class="side-action" title="Espace de travail" data-workspace-nav="inbox">
+      <svg class="icon"><use href="#i-check"/></svg><span>Espace de travail</span><b id="workspace-badge" class="ws-nav-badge hidden"></b>
+    </button>
     <button id="btn-usage" class="side-action" title="Consommation">
       <svg class="icon"><use href="#i-gauge"/></svg> <span>Consommation</span>
     </button>
@@ -95,6 +105,21 @@
 </aside>
 
 <main id="main">
+  <section id="workspace-view" class="view hidden">
+    <header class="ws-header">
+      <button id="btn-workspace-menu" class="ghost burger mobile-only" title="Ouvrir le menu"><svg class="icon"><use href="#i-menu"/></svg></button>
+      <div><div class="ws-eyebrow">ESPACE DE TRAVAIL</div><h1 id="workspace-title">À traiter</h1></div>
+      <button id="btn-workspace-refresh" class="ghost" title="Actualiser"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </header>
+    <nav class="ws-tabs" aria-label="Espace de travail">
+      <button data-workspace-nav="inbox">À traiter</button>
+      <button data-workspace-nav="projects">Projets</button>
+      <button data-workspace-nav="worktrees">Branches</button>
+      <button data-workspace-nav="search">Recherche</button>
+      <button data-workspace-nav="archive">Archives</button>
+    </nav>
+    <div id="workspace-body" tabindex="-1"></div>
+  </section>
   <!-- Écran de création -->
   <section id="new-view" class="view">
     <header class="topbar mobile-only">
@@ -106,6 +131,7 @@
 
     <div class="new-wrap">
       <h1 class="desktop-only">Nouvel agent</h1>
+      <p class="new-intro">Choisis ton modèle, retrouve ton projet et lance la suite.</p>
 
       <!-- Aucun CLI connecté : un formulaire qui ne peut rien lancer ne sert à rien,
            on dit plutôt ce qui manque et comment y remédier. -->
@@ -163,6 +189,7 @@
       <div class="field">
         <label for="effort">Effort de raisonnement</label>
         <select id="effort"></select>
+        <div id="new-model-preview" class="model-preview" aria-live="polite"></div>
       </div>
 
       <!-- Isolation : un worktree git par conversation. Le champ n'apparaît que sur un dépôt
@@ -328,6 +355,7 @@
             <div class="field">
               <label for="tr-effort">Effort de raisonnement</label>
               <select id="tr-effort"></select>
+              <div id="tr-model-preview" class="model-preview" aria-live="polite"></div>
             </div>
           </div>
 
@@ -656,7 +684,7 @@
       </button>
       <div class="head-main">
         <h2>Paramètres</h2>
-        <div class="sub">Écrits dans <code>data/settings.json</code>, par-dessus les valeurs du dépôt</div>
+        <div class="sub">Notifications, connexions et préférences de ton espace</div>
       </div>
       <button id="btn-settings-refresh" class="ghost" title="Recharger">
         <svg class="icon"><use href="#i-refresh"/></svg>
@@ -683,8 +711,10 @@
         <svg class="icon"><use href="#i-dots"/></svg>
       </button>
       <div class="head-tools">
-        <select id="conv-model" class="head-select head-model" title="Modèle"></select>
-        <select id="conv-effort" class="head-select" title="Effort de raisonnement"></select>
+        <button class="ghost" data-conversation-landmarks title="Repères et résumé du fil"><svg class="icon"><use href="#i-note"/></svg></button>
+        <button id="btn-model-settings" class="model-head-button" title="Choisir le modèle et le raisonnement"></button>
+        <select id="conv-model" class="hidden" title="Modèle" aria-hidden="true" tabindex="-1"></select>
+        <select id="conv-effort" class="hidden" title="Effort de raisonnement" aria-hidden="true" tabindex="-1"></select>
         <div id="ctx-ring" class="ctx hidden"></div>
         <button id="btn-compact" class="ghost hidden" title="Compacter le contexte (/compact)">
           <svg class="icon"><use href="#i-slash"/></svg>
@@ -719,6 +749,9 @@
       </div>
       <div id="mobile-head-menu" class="mobile-head-menu hidden">
         <div id="mobile-head-meta" class="mobile-head-meta"></div>
+        <button data-head-action="model-settings"><svg class="icon"><use href="#i-slash"/></svg><span>Modèle et raisonnement</span></button>
+        <button data-conversation-landmarks><svg class="icon"><use href="#i-note"/></svg><span>Repères du fil</span></button>
+        <button data-current-budget><svg class="icon"><use href="#i-gauge"/></svg><span>Alertes de budget</span></button>
         <button id="mobile-action-git" data-head-action="git">
           <svg class="icon"><use href="#i-git"/></svg><span>Graphe git</span>
         </button>
@@ -783,6 +816,12 @@
             <button data-compose-action="goal"><svg class="icon"><use href="#i-target"/></svg><span>Mode objectif</span></button>
             <button data-compose-action="saved"><svg class="icon"><use href="#i-note"/></svg><span>Prompts enregistrés</span></button>
           </div>
+          <div id="model-controls" class="conv-model-bar">
+            <button id="prompt-model" class="model-choice-button" type="button" title="Choisir le modèle et le raisonnement"></button>
+            <div id="model-history" class="model-history"></div>
+            <div id="model-save-status" class="model-save-status hidden" role="status" aria-live="polite"></div>
+            <div id="model-save-actions" class="model-save-actions hidden"><button id="model-save-retry" type="button">Réessayer</button><button id="model-save-cancel" type="button">Garder le choix précédent</button></div>
+          </div>
           <div class="composer-row">
             <button id="btn-compose-more" class="attach send mobile-only" title="Plus d’actions" aria-expanded="false">
               <svg class="icon"><use href="#i-plus"/></svg>
@@ -803,7 +842,6 @@
             <div class="prompt-shell">
               <textarea id="prompt" rows="1" placeholder="Écris à l'agent…"
                 title="Entrée pour envoyer · Maj+Entrée pour un saut de ligne · colle ou dépose une image, un markdown ou un JSON"></textarea>
-              <span id="prompt-model" class="prompt-model hidden"></span>
             </div>
             <button id="btn-mic" class="mic send mobile-only" title="Maintenir pour dicter">
               <svg class="icon"><use href="#i-mic"/></svg>
@@ -1064,7 +1102,7 @@
       <details class="secrets-import">
         <summary>Coller un fichier <code>.env</code> entier</summary>
         <textarea id="secret-env" rows="7" spellcheck="false" autocomplete="off"
-          placeholder="GEMINI_API_KEY=AIza…&#10;mdp_projet=…&#10;# les commentaires et les lignes vides sont ignorés"></textarea>
+          placeholder="GEMINI_API_KEY=AIza…&#10;MY_APP_PASSWORD=…&#10;# les commentaires et les lignes vides sont ignorés"></textarea>
         <div class="secrets-import-foot">
           <span class="relay-note">Les clés déjà présentes sont remplacées, les autres conservées.</span>
           <button id="btn-secret-import" class="secondary">Importer</button>
@@ -1302,11 +1340,24 @@
 <script src="/reconcile.js"></script>
 <script src="/bullets.js"></script>
 <script src="/ideas.js"></script>
+<script src="/message-renderer.js"></script>
 <script src="/dialogs.js"></script>
+<script src="/navigation.js"></script>
+<script src="/action-context.js"></script>
+<script src="/drafts.js"></script>
+<script src="/model-settings.js"></script>
+<script src="/model-picker.js"></script>
+<!-- Contrôleurs de vues autonomes. Ils exposent des factories sans démarrer seuls ; app.js
+     leur injecte les primitives communes après avoir établi l'état de l'application. -->
+<script src="/gallery-view.js"></script>
+<script src="/settings-view.js"></script>
+<script src="/server-view.js"></script>
 <!-- Après `dialogs.js`, dont il emprunte les modales et les avis. `mermaid` n'est PAS chargé
      ici : 3,5 Mo que les sessions qui ne regardent aucun schéma n'ont pas à payer. `plans.js`
      va le chercher dans /vendor à la première ouverture du tiroir. -->
+<script src="/plan-drafts.js"></script>
 <script src="/plans.js"></script>
+<script src="/workspace.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

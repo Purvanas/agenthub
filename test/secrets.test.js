@@ -45,12 +45,12 @@ test('les valeurs sont écrites en 0600, hors de portée des autres comptes', ()
 });
 
 test('un nom de clé illisible par un shell est refusé', () => {
-  // `$mdp-projet` se lit comme `$mdp` suivi de `-projet` : l'agent croirait à une variable
+  // `$my-app-password` se lit comme `$my` suivi de `-app-password` : l'agent croirait à une variable
   // vide plutôt qu'à une erreur.
-  assert.ok(secrets.set(FOLDER, 'mdp-projet', VALUE).error);
+  assert.ok(secrets.set(FOLDER, 'my-app-password', VALUE).error);
   assert.ok(secrets.set(FOLDER, '2fa', VALUE).error, 'ne peut pas commencer par un chiffre');
   assert.ok(secrets.set(FOLDER, '', VALUE).error);
-  assert.ok(!secrets.set(FOLDER, 'mdp_projet', VALUE).error, 'celui-ci est valide');
+  assert.ok(!secrets.set(FOLDER, 'MY_APP_PASSWORD', VALUE).error, 'celui-ci est valide');
 });
 
 test('une valeur trop courte est refusée plutôt que non masquable', () => {
@@ -62,7 +62,7 @@ test('une valeur trop courte est refusée plutôt que non masquable', () => {
 test('le prompt annonce les clés et jamais les valeurs', () => {
   const block = secrets.promptBlock(FOLDER);
   assert.ok(block.includes(`$${KEY}`));
-  assert.ok(block.includes('$mdp_projet'));
+  assert.ok(block.includes('$MY_APP_PASSWORD'));
   assert.equal(block.includes(VALUE), false, 'aucune valeur dans le contexte du modèle');
 });
 

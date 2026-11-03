@@ -56,7 +56,7 @@
     { "value": "gpt-5.4-mini", "label": "gpt-5.4-mini — petit, rapide, économique" },
     { "value": "gpt-5.3-codex-spark", "label": "gpt-5.3-codex-spark — ultra rapide" }
   ],
-  "_efforts_doc": "Claude : valeurs données par `claude --help` (--effort), fiables. Codex : relevées dans le sélecteur du TUI, où 'Extra high' correspond à xhigh ; 'max' et 'ultra' sont derrière « More reasoning… » et leur nom exact de config n'a PAS pu être vérifié (quota Codex épuisé jusqu'au 05/08/2026, et `-c model_reasoning_effort` ne valide pas l'énumération au chargement). Si une valeur est refusée, l'erreur remonte dans le fil de la conversation.",
+  "_efforts_doc": "Claude : valeurs données par `claude --help` (--effort), fiables. Codex : relevées dans le sélecteur du TUI, où 'Extra high' correspond à xhigh ; 'max' et 'ultra' sont derrière « More reasoning… » et leur nom exact de config n'a PAS pu être vérifié (`-c model_reasoning_effort` ne valide pas l'énumération au chargement). Si une valeur est refusée, l'erreur remonte dans le fil de la conversation.",
   "efforts": {
     "claude": [
       { "value": "", "label": "Défaut (élevé)" },

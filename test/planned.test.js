@@ -73,6 +73,19 @@ test('à l’échéance, le message devient dû — et une seule fois', () => {
   assert.equal(done.ranIn, 'enfant-1', 'où il est parti reste consultable');
 });
 
+test('un message pris par le planificateur ne peut plus être annulé en plein départ', () => {
+  const { planned: p } = planned.add({ convId: CONV, prompt: 'maintenant', runAt: soon(1) });
+  const apres = new Date(Date.now() + 2 * 60_000);
+
+  assert.equal(planned.claim(p.id, apres).id, p.id);
+  assert.equal(planned.claim(p.id, apres), null, 'un second tick ne peut pas le reprendre');
+  assert.equal(planned.cancel(p.id), null, 'Annuler ne peut pas promettre un arrêt déjà engagé');
+  planned.sweep(() => false, apres);
+  assert.ok(planned.forConversation(CONV).some((row) => row.id === p.id));
+  planned.sent(p.id, CONV);
+  assert.equal(planned.forConversation(CONV).find((row) => row.id === p.id).status, 'sent');
+});
+
 test('un échec est final, il ne se rejoue pas à chaque tick', () => {
   const { planned: p } = planned.add({ convId: CONV, prompt: 'perdu', runAt: soon(1) });
   planned.failed(p.id, 'La conversation a été supprimée avant l’échéance.');
@@ -82,6 +95,15 @@ test('un échec est final, il ne se rejoue pas à chaque tick', () => {
   const ko = planned.forConversation(CONV).find((x) => x.id === p.id);
   assert.equal(ko.status, 'failed');
   assert.match(ko.error, /supprimée/);
+});
+
+test('un succès ne peut pas être repeint en échec par une erreur tardive', () => {
+  const { planned: p } = planned.add({ convId: CONV, prompt: 'parti', runAt: soon(1) });
+  planned.sent(p.id, CONV);
+  // Par exemple un websocket qui lève après `sent` : le catch du planificateur tente alors
+  // de noter l'erreur, mais le turn a bien été lancé et ce fait ne doit plus être réécrit.
+  assert.equal(planned.failed(p.id, 'diffusion websocket impossible'), null);
+  assert.equal(planned.forConversation(CONV).find((row) => row.id === p.id).status, 'sent');
 });
 
 test('annuler rend l’enregistrement retiré, pas un simple oui', () => {

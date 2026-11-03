@@ -46,7 +46,7 @@ test("un texte que Claude aurait reformulé ne produit aucun chiffre inventé", 
 });
 
 const CODEX_OUTPUT = `
-│ Account: dev@example.com (ChatGPT Plus)
+│ Account: dev@example.test (ChatGPT Plus)
 │ 5h limit:      [██░░░░░░] 72% left (resets 14:01 on 31 Jul)
 │ Weekly limit:  [░░░░░░░░] 0% left (resets 07:01 on 5 Aug)
 `;
@@ -60,13 +60,13 @@ test('Codex donne du restant, on stocke du consommé', () => {
 
   assert.equal(buckets[1].label, 'Semaine');
   assert.equal(buckets[1].percent, 100); // quota épuisé
-  assert.equal(account, 'dev@example.com (ChatGPT Plus)');
+  assert.equal(account, 'dev@example.test (ChatGPT Plus)');
 });
 
 test('un écran Codex sans limites ne renvoie rien plutôt que zéro', () => {
-  const { buckets, account } = parseCodex('│ Account: dev@example.com\n│ Loading…');
+  const { buckets, account } = parseCodex('│ Account: dev@example.test\n│ Loading…');
   assert.deepEqual(buckets, []);
-  assert.equal(account, 'dev@example.com');
+  assert.equal(account, 'dev@example.test');
 });
 
 // Quand une version de Codex sort, son TUI s'arrête sur un menu avant de démarrer et
