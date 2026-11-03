@@ -2,7 +2,7 @@
 
 # agentHub
 
-### Le poste de pilotage de vos agents de code.
+### Mon espace de travail pour piloter plusieurs agents de code.
 
 **Claude Code · Codex · Grok Build**  
 Sessions persistantes, orchestration entre fournisseurs et suivi des exécutions dans une interface web.
@@ -11,7 +11,7 @@ Sessions persistantes, orchestration entre fournisseurs et suivi des exécutions
 [![Node.js](https://img.shields.io/badge/Node.js-Express%20%2B%20WebSocket-339933?logo=nodedotjs&logoColor=white)](https://github.com/Purvanas/agenthub/blob/main/package.json)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/Purvanas/agenthub/blob/main/LICENSE)
 
-[Pourquoi agentHub](#pourquoi-agenthub) · [Du ticket à la relecture](#du-ticket-à-la-relecture) · [Ingénierie](#quelques-choix-dingénierie) · [Installation](#démarrer)
+[Pourquoi agentHub](#pourquoi-agenthub) · [Du ticket à la relecture](#du-ticket-à-la-relecture) · [Ingénierie](#quelques-choix-dingénierie) · [Environnement](#environnement-et-exploitation)
 
 </div>
 
@@ -24,6 +24,8 @@ J'ai créé agentHub pour mon propre usage : travailler régulièrement avec plu
 agentHub rassemble ces besoins dans un même outil. Chaque conversation pilote une **véritable session CLI** : le premier message la crée, les suivants la reprennent. Le serveur traduit les événements des fournisseurs en un fil lisible — texte, réflexion lorsqu'elle est exposée, appels d'outils, résultats et erreurs — diffusé en temps réel par WebSocket.
 
 **C'est le projet personnel que j'utilise le plus : ses fonctionnalités viennent des problèmes rencontrés en travaillant avec les agents au quotidien.**
+
+**Un outil personnel, développé en conditions réelles.** agentHub évolue autour de mes usages et de mon environnement matériel et logiciel. Je partage ici son code, ses fonctionnalités et les choix techniques qui le structurent. Son utilisation dans un autre environnement peut demander des adaptations ; l'installation et les intégrations n'ont pas été validées pour une distribution généraliste.
 
 ## Du ticket à la relecture
 
@@ -141,72 +143,15 @@ flowchart TB
     MCP <--> SERVER
 ```
 
-## Démarrer
+## Environnement et exploitation
 
-### Prérequis
+agentHub est développé pour mon environnement serveur Linux, avec des CLIs installés et authentifiés sur la machine et une exploitation via PM2. Les intégrations s'appuient sur les services disponibles dans cette architecture : serveur MCP Playwright, profil de navigateur persistant, configuration SMTP ou panneau d'administration externe.
 
-- **Node.js 22 recommandé**, version utilisée par la CI.
-- **Git**, utilisé pour les instantanés et les worktrees.
-- **Au moins un CLI** parmi Claude Code, Codex et Grok Build, installé et authentifié sur la machine qui héberge agentHub.
+L'application utilise Node.js et Git, sans étape de build. Sa configuration sépare les valeurs versionnées de `config/` des préférences enregistrées dans `data/settings.json`. Les conversations, journaux, secrets, images et worktrees restent dans `data/`, hors Git : ce dossier doit être sauvegardé indépendamment du dépôt.
 
-Le projet est conçu autour d'un environnement serveur Linux et d'une exploitation avec PM2. Certaines intégrations, notamment le navigateur d'intervention avec Xvfb, ont des prérequis propres à cet environnement.
+Le redémarrage applicatif repose sur deux mécanismes complémentaires : `treekill: false` dans la configuration PM2 et la lecture du flux CLI depuis un fichier. Ils permettent de retrouver une exécution dont le processus a survécu au redémarrage d'agentHub, sans couvrir l'arrêt de la machine.
 
-```bash
-git clone https://github.com/Purvanas/agenthub.git
-cd agenthub
-npm ci
-npm start
-```
-
-Ouvrir **[http://127.0.0.1:3901](http://127.0.0.1:3901)**, choisir un agent, un dossier de travail et un modèle, puis envoyer une première consigne. Les trois fournisseurs ne sont pas nécessaires : l'interface indique ceux qui sont disponibles.
-
-### Exécution persistante avec PM2
-
-Si PM2 est installé :
-
-```bash
-pm2 start ecosystem.config.js
-pm2 save
-```
-
-Pour les redémarrages suivants :
-
-```bash
-pm2 restart agentHub
-```
-
-Utiliser le fichier `ecosystem.config.js` dès le premier lancement : il contient `treekill: false`, nécessaire pour préserver les processus CLI pendant un redémarrage d'agentHub. Le flux fichier et ce réglage fonctionnent ensemble. Cette reprise concerne le redémarrage de l'application ; elle ne fait pas survivre un processus à l'arrêt de la machine.
-
-### Configuration et données
-
-Les fichiers de `config/` fournissent les valeurs par défaut. La page **Paramètres** enregistre ses modifications dans `data/settings.json`. Les réglages concernés sont relus à l'usage, sans redémarrage.
-
-| Fichier | Rôle |
-|---|---|
-| `groups.json` | Dossiers de projets et regroupements proposés. |
-| `models.json` | Modèles proposés dans le sélecteur. |
-| `pricing.json` | Tarifs servant au calcul des coûts estimés. |
-| `memory.json` | Mémoire de projet. |
-| `notify.json` | Notifications ntfy ou webhook. |
-| `mail.example.json` | Exemple SMTP à copier en `mail.json` si nécessaire. |
-| `browser.json` | Serveur MCP Playwright externe ; désactivé par défaut. |
-| `connections.json` | Module Playwright et profil du navigateur d'intervention. |
-
-`config/mail.json` reste hors Git. Les connexions Google se configurent dans l'interface et conservent leurs données dans `data/`.
-
-| Variable d'environnement | Valeur par défaut | Usage |
-|---|---|---|
-| `HOST` | `127.0.0.1` | Adresse d'écoute. |
-| `PORT` | `3901` | Port HTTP et WebSocket. |
-| `AGENTHUB_TZ` | `Europe/Paris` | Fuseau de la planification. |
-| `AGENTHUB_DATA` | `./data` à la racine du projet | Emplacement des données applicatives. |
-| `AGENTHUB_CLAUDE_BIN` | `claude` | Binaire Claude Code. |
-| `AGENTHUB_CODEX_BIN` | `codex` | Binaire Codex. |
-| `AGENTHUB_GROK_BIN` | `grok` | Binaire Grok Build. |
-| `AGENTHUB_MCP_URL` | URL locale calculée depuis `HOST` et `PORT` | URL MCP annoncée aux agents. |
-| `AGENTHUB_GOOGLE_REDIRECT_URI` | `http://127.0.0.1:3901/api/connections/google/callback` | Callback OAuth Google. |
-
-**Sauvegarder `data/`** : ce dossier, exclu de Git, contient notamment les conversations, journaux d'exécution, notes, secrets, images et worktrees. Sa suppression entraîne une perte de données ; une copie du dépôt ne le remplace pas.
+Les prérequis, commandes PM2 et paramètres sont conservés dans les [notes d'exploitation](docs/exploitation.md), comme référence technique de cet environnement.
 
 ### Cadre d'utilisation et limites
 
